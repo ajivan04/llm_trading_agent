@@ -49,9 +49,9 @@ submission-compliant universe or exchange calendar. This is prominently document
 | Area | Included | Extension required |
 |---|---|---|
 | Demo | Seeded synthetic daily data, deterministic policy, next-open replay | Real historical dataset and benchmark runner |
-| Evidence | Availability contract, UTC timestamps, content-sensitive price normalization | News/SEC/ALFRED normalization and source-specific staleness checks |
+| Evidence | Point-in-time, content-sensitive price/news/SEC/ALFRED normalization | Provider integration rehearsals and live staleness thresholds |
 | Snapshots/features | Content-sensitive snapshots; point-in-time returns, SMA, RSI, MACD, volatility and volume features | Market/sector-relative features and training-only normalizers |
-| Cache | Query/window identity and TTL in SQLite | Raw-response archives, API budget/backoff, refresh scheduling |
+| Cache | Canonical identities, SQLite TTL, 24-hour news reuse and raw archives | API budget/backoff and refresh scheduling |
 | Memory | Persistent, time-filtered, experiment/run/fold-isolated BM25 ranking | Embeddings and factual LLM reflection generation |
 | LLM | Injected tokenizer/model wrapper, native chat template, bounded tools | Model loading, validated tool schemas, full transcript export, packing |
 | Risk | Share, cash reserve, gross, position, sector, drawdown and holdings checks | Pending-order reservations, adaptive sizing, correlations, market clock |
