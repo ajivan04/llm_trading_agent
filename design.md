@@ -49,7 +49,8 @@ submission-compliant universe or exchange calendar. This is prominently document
 | Area | Included | Extension required |
 |---|---|---|
 | Demo | Seeded synthetic daily data, deterministic policy, next-open replay | Real historical dataset and benchmark runner |
-| Evidence | Availability contract, UTC timestamps, snapshot logging | Provider normalization, source-specific staleness checks |
+| Evidence | Availability contract, UTC timestamps, content-sensitive price normalization | News/SEC/ALFRED normalization and source-specific staleness checks |
+| Snapshots/features | Content-sensitive snapshots; point-in-time returns, SMA, RSI, MACD, volatility and volume features | Market/sector-relative features and training-only normalizers |
 | Cache | Query/window identity and TTL in SQLite | Raw-response archives, API budget/backoff, refresh scheduling |
 | Memory | Persistent, time-filtered, experiment/run/fold-isolated BM25 ranking | Embeddings and factual LLM reflection generation |
 | LLM | Injected tokenizer/model wrapper, native chat template, bounded tools | Model loading, validated tool schemas, full transcript export, packing |
@@ -130,6 +131,14 @@ end and adjustment policy. Download raw OHLC and corporate-action metadata for
 execution accounting; if adjusted series are used for features, document their
 construction and retain raw execution units. Do not mix split-adjusted quantities
 with raw prices. Model dividends consistently for strategy and benchmarks.
+
+The implemented baseline retains provider adjusted close only on the transient
+adapter bar for audit/archive handling and excludes it from historically eligible
+evidence, identities and policy payloads because Yahoo can retrospectively revise
+adjustments. Feature prices instead form a point-in-time total-return series from
+raw closes plus only split/dividend events already eligible at the decision cutoff.
+The adapter requires externally verified exchange session bounds and never infers
+an intraday close from a date-only provider index.
 
 Add exchange session/calendar data, timezone/DST handling, tradability, symbol/CIK
 mapping and sector classification. Use effective-date versions where available.
