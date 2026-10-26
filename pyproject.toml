@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qwen-stock-research-agent"
+version = "0.1.0"
+description = "Point-in-time Qwen stock-agent research and paper-trading system"
+requires-python = ">=3.11,<3.15"
+dependencies = []
+
+[project.optional-dependencies]
+data = [
+  "alpaca-py==0.44.0",
+  "exchange-calendars==4.13.2",
+  "yfinance==1.7.0",
+]
+train = [
+  "accelerate==1.15.0",
+  "datasets==5.1.0",
+  "peft==0.21.2",
+  "torch==2.14.1",
+  "transformers==5.20.2",
+  "trl==1.16.0",
+]
+notebook = [
+  "ipykernel==7.1.0",
+  "jupyterlab==4.4.10",
+]
+dev = [
+  "ruff==0.14.2",
+]
+
+[project.scripts]
+stock-agent-dataset = "agent.dataset_cli:main"
+stock-agent-evaluate = "agent.evaluate_cli:main"
+stock-agent-prepare = "agent.prepare_cli:main"
+stock-agent-train = "agent.training.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

@@ -48,21 +48,23 @@ submission-compliant universe or exchange calendar. This is prominently document
 
 | Area | Included | Extension required |
 |---|---|---|
-| Demo | Seeded synthetic daily data, deterministic policy, next-open replay | Real historical dataset and benchmark runner |
+| Demo/data | Seeded replay, purged dataset artifacts, XNYS calendar boundary and a provider-fed yfinance preparation CLI | Historical artifact download and source-coverage rehearsal |
 | Evidence | Point-in-time, content-sensitive price/news/SEC/ALFRED normalization | Provider integration rehearsals and live staleness thresholds |
 | Snapshots/features | Content-sensitive snapshots; point-in-time returns, SMA, RSI, MACD, volatility and volume features | Market/sector-relative features and training-only normalizers |
 | Cache | Canonical identities, SQLite TTL, 24-hour news reuse and raw archives | API budget/backoff and refresh scheduling |
 | Memory | Persistent, time-filtered, experiment/run/fold-isolated BM25 ranking | Embeddings and factual LLM reflection generation |
-| LLM | Injected tokenizer/model wrapper, native chat template, bounded tools | Model loading, validated tool schemas, full transcript export, packing |
+| LLM | Pinned Qwen loader, native chat template sizing, validated bounded tools and redacted transcripts | CUDA model-download rehearsal |
 | Risk | Share, cash reserve, gross, position, sector, drawdown and holdings checks | Pending-order reservations, adaptive sizing, correlations, market clock |
 | Simulation | Long-only full fills, side-aware costs, incremental outcomes | Corporate actions, partial fills, realistic order types and live/replay parity |
-| Training | Reward/split helpers, explicit SFT/DPO/PPO interfaces | Actual datasets, trainers, on-policy environment, tested dependency lock |
+| Training | Locked stack, verified artifacts, LoRA SFT/DPO, native Qwen PPO, checkpoints, audited DPO export, evaluation CLI and CUDA smoke command | Colab CUDA execution on final historical artifacts |
 | Live broker | Deliberately blocked paper-broker interface | Outbox, reconciliation, idempotent fill accounting, restart recovery |
-| Evaluation | Return, drawdown, turnover, Sharpe, episode export | Benchmarks, confidence intervals, rolling folds, controlled experiment runner |
+| Evaluation | Metrics, benchmarks, confidence intervals, rolling folds, fair-comparison contracts, frozen-test registry and decision-quality evaluation CLI | Completed historical base/SFT/DPO/PPO runs |
 
-`training-plan` prints a plan, not a completed training job. Training and paper
-broker methods raise NotImplementedError. `QwenPolicy` is optional and untested
-with a downloaded model in this delivery. The demo uses DemoPolicy instead.
+`training-plan` describes the executable `agent.training.cli` commands. SFT, DPO and
+native token-level PPO are implemented, while the actual Qwen download/CUDA smoke and
+historical training runs still require Colab artifacts. Paper broker submission remains
+deliberately unavailable until outbox/reconciliation is implemented. The offline demo
+continues to use `DemoPolicy`.
 
 ## 4. Architecture and dependency boundaries
 
