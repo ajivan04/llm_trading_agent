@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from agent.evaluation import (
     EpisodeWindow, ExperimentRegistry, ExperimentRunner, MarketSession, benchmark_curves,
@@ -118,6 +120,47 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(attempt.metrics["score"], 1.0)
         with self.assertRaises(TypeError):
             attempt.metrics["score"] = 2.0
+
+    def test_final_test_is_reserved_before_evaluator_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "experiments.sqlite"
+            calls = []
+            first = ExperimentRegistry(path, release_id="release-v1")
+            ExperimentRunner(
+                lambda _config, split: calls.append(split) or {"score": 1.0}, first,
+            ).run({"method": "sft"}, split="test")
+            first.close()
+            second = ExperimentRegistry(path, release_id="release-v1")
+            try:
+                with self.assertRaisesRegex(ValueError, "already been consumed"):
+                    ExperimentRunner(
+                        lambda _config, split: calls.append(split) or {"score": 2.0}, second,
+                    ).run({"method": "dpo"}, split="test")
+                self.assertEqual(calls, ["test"])
+            finally:
+                second.close()
+
+    def test_failed_attempt_is_durable_and_failure_message_is_not_stored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ExperimentRegistry(Path(directory) / "experiments.sqlite")
+            try:
+                def fail(_config, _split):
+                    raise RuntimeError("provider echoed SUPER-SECRET")
+                with self.assertRaises(RuntimeError):
+                    ExperimentRunner(fail, registry).run({"method": "sft"}, split="validation")
+                attempt = registry.attempts[0]
+                self.assertEqual(attempt.status, "failed")
+                self.assertEqual(attempt.failure, "RuntimeError")
+                self.assertNotIn("SUPER-SECRET", str(attempt))
+                with self.assertRaisesRegex(ValueError, "sensitive"):
+                    registry.record(
+                        {"api_key": "SUPER-SECRET"}, split="validation", metrics={})
+                registry.record(
+                    {"tokenizer_revision": "safe-model-metadata"},
+                    split="validation", metrics={},
+                )
+            finally:
+                registry.close()
 
 
 if __name__ == "__main__":
