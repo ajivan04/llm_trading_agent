@@ -3,7 +3,7 @@ import unittest
 
 from agent.contracts import Evidence
 from agent.policy import QwenToolPolicy, ToolRegistry, ToolSpec, pack_prompt, parse_decisions
-from agent.policy.loader import HuggingFaceQwenBackend
+from agent.policy.loader import HuggingFaceQwenBackend, POLICY_REVISION
 
 
 def evidence(eid, text="data", symbol="AAPL"):
@@ -127,6 +127,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(maxed.status, "max_turns")
 
     def test_loader_requires_fixed_model_and_revision_without_loading(self):
+        self.assertEqual(HuggingFaceQwenBackend().revision, POLICY_REVISION)
         backend = HuggingFaceQwenBackend(revision="abc123")
         self.assertEqual(backend.revision, "abc123")
         with self.assertRaises(ValueError):

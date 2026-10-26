@@ -6,10 +6,11 @@ from typing import Any
 
 
 POLICY_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+POLICY_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
 
 
 class HuggingFaceQwenBackend:
-    def __init__(self, *, model_name: str = POLICY_MODEL, revision: str,
+    def __init__(self, *, model_name: str = POLICY_MODEL, revision: str = POLICY_REVISION,
                  tokenizer_revision: str | None = None, model_kwargs: Mapping[str, Any] | None = None) -> None:
         if model_name != POLICY_MODEL:
             raise ValueError("policy model is fixed by the assignment")

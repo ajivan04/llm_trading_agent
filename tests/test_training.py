@@ -2,9 +2,18 @@ import math
 import unittest
 
 from agent.training import (
-    MODEL_NAME, DPOCandidate, EpisodeExample, PPOTransition, PPORollout,
-    RewardComponents, TrainingManifest, build_dpo_pair, build_sft_example,
-    compute_gae, ppo_objective, validate_chronological_splits,
+    MODEL_NAME,
+    DPOCandidate,
+    EpisodeExample,
+    PPORollout,
+    PPOTransition,
+    RewardComponents,
+    TrainingManifest,
+    build_dpo_pair,
+    build_sft_example,
+    compute_gae,
+    ppo_objective,
+    validate_chronological_splits,
     validate_fresh_rollout,
 )
 
@@ -115,6 +124,13 @@ class PPOTests(unittest.TestCase):
                 rollout, current_policy_version="policy-2", expected_rollout_id="rollout-1")
         with self.assertRaisesRegex(ValueError, "action_mask"):
             transition(action_mask=(0, 0))
+        sample = transition(token_ids=(10, 11, 12), action_mask=(0, 1, 1),
+                            old_logprobs=(-1.0, -0.5, -0.4),
+                            reference_logprobs=(-1.1, -0.6, -0.5))
+        self.assertEqual(sample.prompt_token_ids, (10,))
+        self.assertEqual(sample.action_token_ids, (11, 12))
+        self.assertEqual(sample.attention_mask, (1, 1, 1))
+        self.assertEqual(len(sample.old_values), 3)
 
     def test_gae_terminal_and_truncation_bootstrap(self):
         terminal = transition(value=0.5, reward=1.0, next_value=0.0, done=True)

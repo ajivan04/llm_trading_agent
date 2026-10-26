@@ -13,7 +13,8 @@ class TrainingStackUnavailable(RuntimeError):
 _METHOD_CAPABILITIES = {
     "sft": ("trl", "SFTTrainer"),
     "dpo": ("trl", "DPOTrainer"),
-    "ppo": ("trl", "PPOTrainer"),
+    # PPO is implemented natively because TRL's PPO surface is version-sensitive.
+    "ppo": ("torch", "optim"),
 }
 
 
@@ -23,7 +24,7 @@ def resolve_training_stack(
     """Import optional libraries and verify the exact trainer surface in use."""
     if method not in _METHOD_CAPABILITIES:
         raise ValueError("method must be sft, dpo, or ppo")
-    required = ("transformers", "peft", "datasets", "trl")
+    required = ("torch", "transformers", "peft", "datasets", "trl")
     modules: dict[str, Any] = {}
     versions: dict[str, str] = {}
     try:
@@ -41,7 +42,10 @@ def resolve_training_stack(
             )
     for module_name, attribute in (
         ("transformers", "AutoTokenizer"), ("transformers", "AutoModelForCausalLM"),
+        ("transformers", "Trainer"), ("transformers", "TrainingArguments"),
+        ("transformers", "DataCollatorForSeq2Seq"),
         ("peft", "LoraConfig"), ("peft", "get_peft_model"),
+        ("peft", "PeftModel"),
         ("datasets", "Dataset"), _METHOD_CAPABILITIES[method],
     ):
         if not hasattr(modules[module_name], attribute):

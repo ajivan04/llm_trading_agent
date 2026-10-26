@@ -7,10 +7,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-from agent.contracts import FrozenDict, canonical_json, content_hash, normalize_timestamp, parse_timestamp
-
+from agent.contracts import (
+    FrozenDict,
+    canonical_json,
+    content_hash,
+    normalize_timestamp,
+    parse_timestamp,
+)
 
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+MODEL_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
 _SPLITS = {"train", "validation", "test"}
 
 
@@ -108,10 +114,13 @@ class SFTExample:
 
 def build_sft_example(
     example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    allowed_splits: tuple[str, ...] = ("train",),
 ) -> SFTExample:
     """Render native chat format and supervise assistant generation tokens only."""
-    if example.split != "train":
-        raise ValueError("SFT examples must come from the train split")
+    if not allowed_splits or not set(allowed_splits) <= _SPLITS:
+        raise ValueError("allowed_splits must name known nonempty splits")
+    if example.split not in allowed_splits:
+        raise ValueError("SFT example is outside the explicitly allowed splits")
     if type(max_length) is not int or max_length <= 0:
         raise ValueError("max_length must be positive")
     if any(message.get("role") == "assistant" for message in example.messages):
@@ -144,7 +153,8 @@ def build_sft_example(
         raise ValueError("attention and assistant masks must be binary")
     labels = tuple(
         token if is_attended and is_assistant else -100
-        for token, is_attended, is_assistant in zip(input_ids, attention, assistant)
+        for token, is_attended, is_assistant in zip(
+            input_ids, attention, assistant, strict=True)
     )
     supervised = sum(label != -100 for label in labels)
     if supervised == 0:
@@ -191,13 +201,29 @@ class DPOPair:
     preference_margin: float
     chosen_id: str
     rejected_id: str
+    split: str = "train"
+    audit_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.split not in {"train", "validation"}:
+            raise ValueError("DPO pairs must belong to train or validation")
+        for name in ("prompt", "chosen", "rejected", "state_hash", "chosen_id", "rejected_id"):
+            object.__setattr__(self, name, _required(getattr(self, name), name))
+        if self.chosen == self.rejected or self.chosen_id == self.rejected_id:
+            raise ValueError("DPO chosen and rejected alternatives must differ")
+        margin = _finite(self.preference_margin, "preference_margin")
+        if margin <= 0:
+            raise ValueError("DPO preference_margin must be positive")
+        object.__setattr__(self, "preference_margin", margin)
+        if self.audit_hash is not None:
+            object.__setattr__(self, "audit_hash", _required(self.audit_hash, "audit_hash"))
 
 
 def build_dpo_pair(
     first: DPOCandidate, second: DPOCandidate, *, minimum_margin: float = 0.0,
 ) -> DPOPair:
-    if first.split != "train" or second.split != "train":
-        raise ValueError("DPO pairs must use train-split candidates")
+    if first.split != second.split or first.split not in {"train", "validation"}:
+        raise ValueError("DPO pairs must use candidates from the same train/validation split")
     if first.state_hash != second.state_hash:
         raise ValueError("DPO candidates must come from the same state")
     if first.response == second.response:
@@ -213,7 +239,7 @@ def build_dpo_pair(
         raise ValueError("DPO preference is tied or below the minimum margin")
     return DPOPair(
         chosen.prompt, chosen.response, rejected.response, chosen.state_hash,
-        margin, chosen.candidate_id, rejected.candidate_id,
+        margin, chosen.candidate_id, rejected.candidate_id, chosen.split,
     )
 
 
@@ -231,6 +257,9 @@ class PPOTransition:
     next_value: float
     done: bool = False
     truncated: bool = False
+    attention_mask: tuple[int, ...] = ()
+    old_values: tuple[float, ...] = ()
+    reward_components: Mapping[str, float] = field(default_factory=FrozenDict)
 
     def __post_init__(self) -> None:
         for name in ("rollout_id", "policy_version", "observation_hash"):
@@ -241,8 +270,31 @@ class PPOTransition:
         }
         if len(lengths) != 1 or not self.token_ids:
             raise ValueError("PPO token arrays must be nonempty and aligned")
+        attention = self.attention_mask or tuple(1 for _ in self.token_ids)
+        values = self.old_values or tuple(self.value for _ in self.token_ids)
+        if len(attention) != len(self.token_ids) or len(values) != len(self.token_ids):
+            raise ValueError("PPO attention/value arrays must align with token_ids")
+        if any(item not in (0, 1) for item in attention):
+            raise ValueError("PPO attention_mask must be binary")
+        if any(not math.isfinite(float(item)) for item in values):
+            raise ValueError("PPO old_values must be finite")
+        object.__setattr__(self, "attention_mask", tuple(attention))
+        object.__setattr__(self, "old_values", tuple(float(item) for item in values))
+        components = {}
+        for name, item in self.reward_components.items():
+            components[_required(str(name), "reward component name")] = _finite(
+                item, f"reward_components[{name}]")
+        object.__setattr__(self, "reward_components", FrozenDict(components))
         if any(value not in (0, 1) for value in self.action_mask) or not any(self.action_mask):
             raise ValueError("PPO action_mask must be binary with an action token")
+        first_action = self.action_mask.index(1)
+        if first_action == 0 or any(not value for value in self.action_mask[first_action:]):
+            raise ValueError("PPO action tokens must follow a nonempty contiguous prompt")
+        if any(
+            selected and not attended
+            for selected, attended in zip(self.action_mask, attention, strict=True)
+        ):
+            raise ValueError("PPO action tokens must be attended")
         for name in ("value", "reward", "next_value"):
             object.__setattr__(self, name, _finite(getattr(self, name), name))
         for values, name in (
@@ -255,6 +307,22 @@ class PPOTransition:
             raise ValueError("a transition cannot be both terminal and truncated")
         if self.done and self.next_value != 0:
             raise ValueError("terminal transitions must have zero next_value")
+
+    @property
+    def prompt_token_ids(self) -> tuple[int, ...]:
+        return tuple(
+            token
+            for token, selected in zip(self.token_ids, self.action_mask, strict=True)
+            if not selected
+        )
+
+    @property
+    def action_token_ids(self) -> tuple[int, ...]:
+        return tuple(
+            token
+            for token, selected in zip(self.token_ids, self.action_mask, strict=True)
+            if selected
+        )
 
 
 @dataclass(frozen=True)
@@ -305,7 +373,10 @@ def compute_gae(
         continues = 0.0 if (transition.done or transition.truncated) else 1.0
         carried = delta + gamma * gae_lambda * continues * carried
         advantages[index] = carried
-    returns = [advantage + transition.value for advantage, transition in zip(advantages, transitions)]
+    returns = [
+        advantage + transition.value
+        for advantage, transition in zip(advantages, transitions, strict=True)
+    ]
     return tuple(advantages), tuple(returns)
 
 

@@ -2,7 +2,7 @@
 
 Run: python trading_agent.py demo --output runs/demo
 Optional: python trading_agent.py training-plan --method ppo
-No command connects to a broker or downloads a model. See design.md.
+Training execution is exposed by ``python -m agent.training.cli``. See design.md.
 """
 from __future__ import annotations
 
@@ -188,13 +188,24 @@ class DataProvider(Protocol):
 
 
 class HistoricalSourceAdapter:
-    """Implement one adapter each for yfinance, Alpha Vantage, SEC, ALFRED.
+    """Combine already-normalized provider adapters behind one cutoff-safe boundary."""
 
-    Normalize into Evidence; enforce availability before returning. Keep provider
-    keys out of logs. Missing historical availability must fail, not use latest.
-    """
+    def __init__(self, sources: tuple[DataProvider, ...]):
+        if not sources:
+            raise ValueError('At least one historical source is required')
+        self.sources = sources
+
     def evidence(self, symbols: tuple[str, ...], as_of: datetime) -> list[Evidence]:
-        raise NotImplementedError('Implement historical source and timestamp normalization')
+        cutoff = stamp(as_of)
+        combined = [item for source in self.sources for item in source.evidence(symbols, as_of)]
+        if any(not isinstance(item, Evidence) for item in combined):
+            raise TypeError('Historical sources must return Evidence contracts')
+        if any(not item.eligible(cutoff) for item in combined):
+            raise ValueError('Historical source exposed evidence after the decision cutoff')
+        ids = [item.id for item in combined]
+        if len(ids) != len(set(ids)):
+            raise ValueError('Historical sources returned duplicate evidence IDs')
+        return sorted(combined, key=lambda item: (item.available_at, item.source, item.id))
 
 
 class ToolRegistry:
@@ -550,25 +561,44 @@ def replay(cfg: Config, bars: list[Bar], policy: Policy, output: Path) -> dict:
 
 
 class TrainingPipeline:
-    """Explicit integration boundaries: these methods do not claim to train."""
-    def train_sft(self, episodes: list[dict], output: Path):
-        raise NotImplementedError('Pack native chat templates; mask prompt/padding; preserve completions; attach LoRA')
+    """Compatibility facade over the tested training package."""
 
-    def train_dpo(self, pairs: list[dict], output: Path):
-        raise NotImplementedError('Generate same-state chosen/rejected actions on training histories, then use pinned TRL DPO')
+    def __init__(self, settings):
+        self.settings = settings
 
-    def train_ppo(self, environment, output: Path):
-        raise NotImplementedError('Implement fresh on-policy rollouts, value learning, GAE, PPO clipping and reference KL')
+    def train_sft(self, episodes: list[dict], validation: list[dict] | None = None):
+        from agent.training import EpisodeExample, train_sft
+        return train_sft(
+            [EpisodeExample(**item) for item in episodes],
+            [EpisodeExample(**item) for item in (validation or [])],
+            settings=self.settings,
+        )
+
+    def train_dpo(self, pairs: list[dict], validation: list[dict] | None = None):
+        from agent.training import DPOPair, train_dpo
+        return train_dpo(
+            [DPOPair(**item) for item in pairs],
+            [DPOPair(**item) for item in (validation or [])],
+            settings=self.settings,
+        )
+
+    def train_ppo(self, environment, optimizer, *, updates: int, package_versions: dict):
+        from agent.training import train_ppo
+        return train_ppo(
+            environment, optimizer, settings=self.settings, updates=updates,
+            package_versions=package_versions,
+        )
 
 
 def training_plan(method: str) -> dict:
-    return {'method': method, 'implemented': False,
+    return {'method': method, 'implemented': True,
             'policy_model': 'Qwen/Qwen2.5-1.5B-Instruct', 'adapters': 'LoRA',
             'input': {'sft': 'training-only episodes with masked completions',
                       'dpo': 'chosen/rejected completions for identical prompts',
                       'ppo': 'fresh rollouts from current policy on training-only chronological episodes'}[method],
             'freeze': 'No parameter, prompt, architecture or risk-rule changes Nov 9–13, 2026',
-            'documentation': 'See design.md, training and evaluation sections'}
+            'command': f'python -m agent.training.cli {method} --help',
+            'documentation': 'See docs/training.md and design.md'}
 
 
 def main():
