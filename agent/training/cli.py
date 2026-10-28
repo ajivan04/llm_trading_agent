@@ -88,6 +88,10 @@ def _verify_sft_manifest(
             manifest.get("test_end"),
         ),
     }
+    if "regime_id" in manifest:
+        identity["regime_id"] = manifest["regime_id"]
+    if "decision_session_filter_hash" in manifest:
+        identity["decision_session_filter_hash"] = manifest["decision_session_filter_hash"]
     if content_hash(identity) != dataset_hash:
         raise ValueError("SFT dataset artifact hash verification failed")
     expected_train = [row for row in all_rows if row.get("split") == "train"]

@@ -16,6 +16,11 @@ Research questions:
 4. How much apparent improvement is attributable to exposure, costs, or labels?
 5. Does the system maintain correct state during outages and ambiguous execution?
 
+For the November 2026 evaluation, add a declared event-regime question: does a policy trained
+on analogous U.S. midterm election weeks generalize to the held-out 2026 election week? The
+event date controls the chronological split only; the policy must not receive election outcomes
+or an automatically generated political sentiment feature.
+
 Use enterprise practices at student scale: typed contracts, data lineage,
 independent risk checks, order reconciliation, immutable experiments and recovery.
 Complexity is allowed; each additional component must have a measurable purpose.
@@ -31,7 +36,7 @@ Complexity is allowed; each additional component must have a measurable purpose.
 | $100,000 virtual capital | Equal initial capital in replay and paper evaluation |
 | Alpaca paper only; no manual trading | No real-money mode, no manually triggered trade decisions |
 | Fully operational by November 8 | Integrate, rehearse and select a deployment configuration first |
-| Frozen November 9–13 | Freeze weights, prompts, tools, thresholds, schedules and architecture |
+| Frozen before November 2 | Freeze weights, prompts, tools, thresholds, schedules, architecture, and the release-test ID before the first target-week decision |
 | Automatically saved daily logs | Structured event logs plus readable daily ET summaries |
 | Preserve notebook baseline universe | Copy all baseline symbols in order, then only permitted additions |
 
@@ -58,7 +63,7 @@ submission-compliant universe or exchange calendar. This is prominently document
 | Simulation | Long-only full fills, side-aware costs, incremental outcomes | Corporate actions, partial fills, realistic order types and live/replay parity |
 | Training | Locked stack, verified artifacts, LoRA SFT/DPO, native Qwen PPO, checkpoints, audited DPO export, evaluation CLI and CUDA smoke command | Colab CUDA execution on final historical artifacts |
 | Live broker | Deliberately blocked paper-broker interface | Outbox, reconciliation, idempotent fill accounting, restart recovery |
-| Evaluation | Metrics, benchmarks, confidence intervals, rolling folds, fair-comparison contracts, frozen-test registry and decision-quality evaluation CLI | Completed historical base/SFT/DPO/PPO runs |
+| Evaluation | Metrics, benchmarks, confidence intervals, rolling folds, event-regime windows, fair-comparison contracts, frozen-test registry and decision-quality evaluation CLI | Completed historical base/SFT/DPO/PPO runs |
 
 `training-plan` describes the executable `agent.training.cli` commands. SFT, DPO and
 native token-level PPO are implemented, while the actual Qwen download/CUDA smoke and
@@ -335,7 +340,8 @@ One-day labels can conflict with multi-day strategy objectives; compare horizons
 ### 10.1 Common controls
 
 All learning uses TRAIN data only. Select checkpoints/reward weights on validation.
-Freeze final system before November 9. No live-week parameter updates. Record
+Freeze the final system no later than the November 2, 2026 pre-event cutoff. No
+target-week parameter updates or artifact rebuilds after that point. Record
 exact packages, tokenizer, model revision, prompt/template version, data hashes,
 seed, adapter configuration, learning rate, steps, GPU memory and elapsed time.
 Trainer APIs change; pin a version after testing compatibility rather than use an

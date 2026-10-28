@@ -91,6 +91,24 @@ class PreparationTests(unittest.TestCase):
                 self.settings.test_end, starting_qty=1, trade_qty=2,
             )
 
+    def test_filters_decision_sessions_but_keeps_warmup_bars(self):
+        prepared = prepare_training_artifacts(
+            {"AAPL": self.bars},
+            settings=PreparationSettings(
+                self.settings.train_end, self.settings.validation_end,
+                self.settings.test_end,
+                allowed_decision_sessions=("2026-01-02", "2026-01-06"),
+            ),
+            next_session_resolver=lambda session: {
+                first.session: second.session
+                for first, second in zip(self.bars, self.bars[1:], strict=False)
+            }[session],
+        )
+        self.assertEqual(
+            tuple(item.example_id for item in prepared.dataset.examples),
+            ("AAPL:2026-01-02", "AAPL:2026-01-06"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

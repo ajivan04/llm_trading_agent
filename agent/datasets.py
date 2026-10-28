@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from agent.contracts import Decision, Evidence, Snapshot, canonical_json, content_hash
 from agent.evaluation.splits import EpisodeWindow, purged_split
 from agent.training.core import EpisodeExample, validate_chronological_splits
-
 
 _FORBIDDEN_PROMPT_KEYS = {
     "next_open", "next_close", "outcome", "reward", "preference_score",
@@ -95,6 +95,8 @@ class DatasetManifest:
     train_end: str
     validation_end: str
     test_end: str
+    regime_id: str = "chronological-v1"
+    decision_session_filter_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,8 @@ class HistoricalDatasetBuilder:
     def build(
         self, episodes: Iterable[HistoricalEpisode], *,
         train_end: str, validation_end: str, test_end: str,
+        regime_id: str = "chronological-v1",
+        decision_session_filter_hash: str = "",
     ) -> DatasetArtifact:
         records = tuple(episodes)
         if not records:
@@ -198,6 +202,8 @@ class HistoricalDatasetBuilder:
             "purged": tuple(item.episode_id for item in split_windows["purged"]),
             "source_hashes": tuple(sorted(source_hashes)),
             "boundaries": (train_end, validation_end, test_end),
+            "regime_id": regime_id,
+            "decision_session_filter_hash": decision_session_filter_hash,
         }
         manifest = DatasetManifest(
             dataset_hash=content_hash(identity),
@@ -205,6 +211,8 @@ class HistoricalDatasetBuilder:
             purged_episode_ids=tuple(item.episode_id for item in split_windows["purged"]),
             source_hashes=tuple(sorted(source_hashes)),
             train_end=train_end, validation_end=validation_end, test_end=test_end,
+            regime_id=regime_id,
+            decision_session_filter_hash=decision_session_filter_hash,
         )
         return DatasetArtifact(tuple(examples), manifest)
 
@@ -257,7 +265,16 @@ def load_dataset_artifact(root: Path) -> DatasetArtifact:
         "purged": manifest.purged_episode_ids,
         "source_hashes": manifest.source_hashes,
         "boundaries": (manifest.train_end, manifest.validation_end, manifest.test_end),
+        "regime_id": manifest.regime_id,
+        "decision_session_filter_hash": manifest.decision_session_filter_hash,
     }
     if content_hash(identity) != manifest.dataset_hash:
-        raise ValueError("dataset content hash does not match the manifest")
+        legacy_identity = {
+            key: value for key, value in identity.items()
+            if key not in {"regime_id", "decision_session_filter_hash"}
+        }
+        if (manifest.regime_id != "chronological-v1"
+                or manifest.decision_session_filter_hash
+                or content_hash(legacy_identity) != manifest.dataset_hash):
+            raise ValueError("dataset content hash does not match the manifest")
     return DatasetArtifact(examples, manifest)

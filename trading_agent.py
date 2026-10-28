@@ -591,12 +591,20 @@ class TrainingPipeline:
 
 
 def training_plan(method: str) -> dict:
+    from agent.evaluation import build_midterm_regime_plan
+    regime = build_midterm_regime_plan()
     return {'method': method, 'implemented': True,
             'policy_model': 'Qwen/Qwen2.5-1.5B-Instruct', 'adapters': 'LoRA',
             'input': {'sft': 'training-only episodes with masked completions',
                       'dpo': 'chosen/rejected completions for identical prompts',
                       'ppo': 'fresh rollouts from current policy on training-only chronological episodes'}[method],
-            'freeze': 'No parameter, prompt, architecture or risk-rule changes Nov 9–13, 2026',
+            'freeze': 'No parameter, prompt, architecture, risk-rule, or artifact changes after Nov 2, 2026 pre-event cutoff',
+            'regime': regime.to_dict(),
+            'evaluation_window': {
+                'start': regime.target.start.isoformat(),
+                'end': regime.target.end.isoformat(),
+                'election_date': regime.target.election_date.isoformat(),
+            },
             'command': f'python -m agent.training.cli {method} --help',
             'documentation': 'See docs/training.md and design.md'}
 

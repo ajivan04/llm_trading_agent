@@ -61,15 +61,34 @@ the raw-bar archive, outcome audit, audited DPO pairs, and train-only PPO replay
 subset during a rehearsal; omit `--symbols` for the assignment baseline universe. The requested
 price range must include a warm-up period and one complete outcome session after `--test-end`.
 
+For the 2026 midterm evaluation, use the event-regime mode. It keeps the 2026 target year out
+of training, uses analogous Monday-through-Sunday event weeks from 2006, 2010, 2014, and 2018
+for training, and uses 2022 as validation. The target window is November 2–8, with outcomes
+allowed to mature through November 9. The regime is a market-timing split, not a political
+prediction feature; election-related text is not added to policy prompts automatically.
+
 ```bash
 uv run stock-agent-prepare \
-  --start 2025-01-02 --end 2026-11-03 \
-  --train-end 2026-08-31T23:59:59Z \
-  --validation-end 2026-09-30T23:59:59Z \
-  --test-end 2026-10-31T23:59:59Z \
+  --start 2005-01-03 --end 2026-11-10 \
+  --train-end 2018-11-13T23:59:59Z \
+  --validation-end 2022-11-15T23:59:59Z \
+  --test-end 2026-11-10T23:59:59Z \
   --output artifacts/dataset-v1 \
+  --regime midterm-election \
   --symbols AAPL MSFT NVDA
 ```
+
+Because the 2026 target week has not occurred at the time of this plan, create the frozen
+training/validation artifact now with `--end 2022-11-15` and the same split boundaries; it will
+contain no 2026 test rows. Record its `dataset_hash` and freeze it before November 2. After the
+target week, build a separate evaluation-only artifact containing the 2026 rows and use the
+frozen training hash in the release registry.
+
+Freeze the training artifact, prompt, risk rules, seeds, and release-test ID no later than the
+November 2 pre-event cutoff. Run the final target-week evaluation only after its market data has
+matured; write it as a separate append-only evaluation artifact and do not rebuild the frozen
+training artifact with target-week rows. Before then, use an earlier `--test-end` only for
+development; do not treat that as the final election-week result.
 
 This produces `artifacts/dataset-v1/dataset/` with verified `examples.jsonl`,
 `train.jsonl`, `validation.jsonl`, `test.jsonl`, and `manifest.json`.

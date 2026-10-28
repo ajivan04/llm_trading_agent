@@ -27,6 +27,8 @@ class PreparationSettings:
     cost_bps: float = 5.0
     minimum_preference_margin: float = 1e-7
     universe_version: str = "assignment-baseline-v1"
+    allowed_decision_sessions: tuple[str, ...] = ()
+    regime_id: str = "chronological-v1"
 
     def __post_init__(self) -> None:
         for name in ("initial_cash", "cost_bps", "minimum_preference_margin"):
@@ -42,6 +44,12 @@ class PreparationSettings:
                 raise ValueError(f"{name} must be a positive integer")
         if self.trade_qty > min(self.starting_qty, self.max_qty):
             raise ValueError("trade_qty cannot exceed starting_qty or max_qty")
+        sessions = tuple(self.allowed_decision_sessions)
+        if any(not isinstance(item, str) or len(item) != 10 for item in sessions):
+            raise ValueError("allowed_decision_sessions must contain ISO dates")
+        object.__setattr__(self, "allowed_decision_sessions", tuple(sorted(set(sessions))))
+        if not isinstance(self.regime_id, str) or not self.regime_id.strip():
+            raise ValueError("regime_id must be nonempty")
 
 
 @dataclass(frozen=True)
@@ -190,6 +198,9 @@ def prepare_training_artifacts(
                 )
             current_evidence = current.to_evidence()
             history.append(current_evidence)
+            if (settings.allowed_decision_sessions
+                    and current.session not in settings.allowed_decision_sessions):
+                continue
             feature = feature_builder.build(
                 history, symbol=symbol, as_of=current.close_at,
             )
@@ -230,6 +241,8 @@ def prepare_training_artifacts(
     dataset = HistoricalDatasetBuilder().build(
         episodes, train_end=settings.train_end,
         validation_end=settings.validation_end, test_end=settings.test_end,
+        regime_id=settings.regime_id,
+        decision_session_filter_hash=content_hash(settings.allowed_decision_sessions),
     )
     episodes_by_id = {item.episode_id: item for item in episodes}
     dpo: dict[str, list[AuditedDPOPair]] = {"train": [], "validation": []}

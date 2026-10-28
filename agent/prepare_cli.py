@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent.data import XNYSCalendar, YFinancePriceAdapter
+from agent.evaluation import build_midterm_regime_plan
 from agent.preparation import PreparationSettings, prepare_training_artifacts
 from agent.universe import BASELINE_UNIVERSE
 
@@ -22,6 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--symbols", nargs="+", default=list(BASELINE_UNIVERSE))
     parser.add_argument("--cost-bps", type=float, default=5.0)
     parser.add_argument("--trade-qty", type=int, default=5)
+    parser.add_argument(
+        "--regime", choices=("none", "midterm-election"), default="none",
+        help="restrict decision sessions to the declared event-regime windows",
+    )
+    parser.add_argument("--target-election-year", type=int, default=2026)
+    parser.add_argument("--historical-election-years", type=int, nargs="+",
+                        default=[2022, 2018, 2014, 2010, 2006])
     return parser
 
 
@@ -44,15 +52,30 @@ def main(argv: list[str] | None = None) -> int:
         )
         for symbol in symbols
     }
+    regime_plan = None
+    allowed_sessions = ()
+    if args.regime == "midterm-election":
+        regime_plan = build_midterm_regime_plan(
+            target_year=args.target_election_year,
+            historical_years=tuple(args.historical_election_years),
+        )
+        allowed_sessions = regime_plan.decision_sessions()
     prepared = prepare_training_artifacts(
         bars,
         settings=PreparationSettings(
             train_end=args.train_end, validation_end=args.validation_end,
             test_end=args.test_end, cost_bps=args.cost_bps, trade_qty=args.trade_qty,
+            allowed_decision_sessions=allowed_sessions,
+            regime_id=regime_plan.regime if regime_plan is not None else "chronological-v1",
         ),
         next_session_resolver=lambda session: calendar.next(session).session,
     )
     prepared.write(args.output)
+    if regime_plan is not None:
+        (args.output / "regime-plan.json").write_text(
+            json.dumps(regime_plan.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     print(json.dumps({
         "artifact_hash": prepared.artifact_hash,
         "dataset_hash": prepared.dataset.manifest.dataset_hash,

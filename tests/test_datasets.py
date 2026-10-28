@@ -5,7 +5,10 @@ from pathlib import Path
 
 from agent.contracts import Decision, Evidence, content_hash
 from agent.datasets import (
-    HistoricalDatasetBuilder, HistoricalEpisode, load_dataset_artifact, load_examples,
+    HistoricalDatasetBuilder,
+    HistoricalEpisode,
+    load_dataset_artifact,
+    load_examples,
 )
 from agent.snapshots import SnapshotBuilder
 
@@ -100,6 +103,18 @@ class HistoricalDatasetTests(unittest.TestCase):
             )
             with self.assertRaises(ValueError):
                 load_dataset_artifact(output)
+
+    def test_regime_metadata_changes_dataset_identity(self):
+        records = [episode(
+            "train", "2026-01-01T21:00:00Z", "2026-01-02T21:00:00Z")]
+        default = self.build(records)
+        regime = HistoricalDatasetBuilder().build(
+            records, train_end="2026-01-03T00:00:00Z",
+            validation_end="2026-01-06T00:00:00Z", test_end="2026-01-09T00:00:00Z",
+            regime_id="us-midterm-election-week-v1",
+            decision_session_filter_hash="filter-hash",
+        )
+        self.assertNotEqual(default.manifest.dataset_hash, regime.manifest.dataset_hash)
 
 
 if __name__ == "__main__":
