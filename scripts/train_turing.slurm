@@ -120,6 +120,14 @@ if [[ "$STAGE" == "eval" || "$STAGE" == "all" ]]; then
   fi
 fi
 
+if [[ "$STAGE" == "sft" || "$STAGE" == "dpo" || "$STAGE" == "ppo" ]]; then
+  if [[ ! -f "$OUTPUT_ROOT/dataset/train.jsonl" ]]; then
+    echo "Missing prepared dataset: $OUTPUT_ROOT/dataset/train.jsonl" >&2
+    echo "Run STAGE=prepare first or copy the prepared artifact to OUTPUT_ROOT." >&2
+    exit 1
+  fi
+fi
+
 latest_checkpoint() {
   find "$1" -maxdepth 1 -type d -name 'checkpoint-*' | sort -V | tail -n 1 || true
 }
