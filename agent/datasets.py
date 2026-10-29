@@ -43,6 +43,19 @@ def policy_evidence(item: Evidence) -> dict[str, Any]:
     ``retrieved_at`` remains audit lineage because a historical record is often
     downloaded long after the decision being replayed.
     """
+    values: Any = item.values
+    if item.source == "derived.price_features":
+        # Source IDs/fingerprints are audit lineage, not model inputs. Keeping
+        # the full warm-up history here can create hundreds of thousands of
+        # tokens for a single event-window example.
+        values = {
+            key: item.values[key]
+            for key in (
+                "features", "feature_version", "windows", "adjustment_policy",
+                "price_basis", "provider_adjusted_close_usage", "latest_session",
+            )
+            if key in item.values
+        }
     return {
         "id": item.id,
         "source": item.source,
@@ -50,7 +63,7 @@ def policy_evidence(item: Evidence) -> dict[str, Any]:
         "observed_at": item.observed_at,
         "available_at": item.available_at,
         "text": item.text,
-        "values": item.values,
+        "values": values,
         "url": item.url,
         "revision_id": item.revision_id,
         "accession_id": item.accession_id,

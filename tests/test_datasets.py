@@ -54,6 +54,7 @@ class HistoricalDatasetTests(unittest.TestCase):
         self.assertNotIn("outcome_at", prompt)
         self.assertNotIn("reward", prompt)
         self.assertNotIn("retrieved_at", prompt)
+        self.assertNotIn("source_evidence_fingerprints", prompt)
         evidence_payload = json.loads(prompt)["evidence"]
         self.assertEqual(artifact.examples[0].evidence_hash, content_hash(evidence_payload))
 

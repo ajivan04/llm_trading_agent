@@ -50,18 +50,29 @@ def _generate(examples, adapter: Path | None, max_new_tokens: int):
         model = PeftModel.from_pretrained(model, str(adapter), is_trainable=False)
     model.eval()
     results = {}
+    max_context = int(getattr(model.config, "max_position_embeddings", 131072))
     for example in examples:
-        tokens = tokenizer.apply_chat_template(
+        encoded = tokenizer.apply_chat_template(
             list(example.messages), tokenize=True, add_generation_prompt=True,
-            return_tensors="pt",
-        ).to(model.device)
+            return_tensors="pt", return_dict=True,
+        )
+        input_ids = encoded["input_ids"].to(model.device)
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(model.device)
+        if input_ids.shape[-1] + max_new_tokens > max_context:
+            raise ValueError(
+                f"{example.example_id} exceeds model context: "
+                f"{input_ids.shape[-1]} + {max_new_tokens} > {max_context}"
+            )
         with torch.no_grad():
             generated = model.generate(
-                tokens, max_new_tokens=max_new_tokens, do_sample=False,
+                input_ids=input_ids, attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens, do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
         results[example.example_id] = tokenizer.decode(
-            generated[0, tokens.shape[-1]:], skip_special_tokens=True,
+            generated[0, input_ids.shape[-1]:], skip_special_tokens=True,
         )
     return results
 

@@ -68,7 +68,10 @@ SFT_STEPS=1000 DPO_STEPS=500 PPO_UPDATES=100 \
 
 Omit `SYMBOLS` to use the full assignment universe. For a quick infrastructure rehearsal, set
 `SFT_STEPS=2 DPO_STEPS=2 PPO_UPDATES=1`; use `SKIP_SMOKE=1` only when CUDA is unavailable.
-The script does not run the held-out 2026 target-week test.
+The script requires CUDA by default (`REQUIRE_CUDA=1`) and does not run the held-out 2026
+target-week test. Preparation-only runs can set `REQUIRE_CUDA=0`, but full training should run
+on the Colab L4. If preparation was run before the compact-prompt fix, rerun the script so the
+dataset artifact is regenerated before training.
 
 The preparation CLI now creates those inputs directly from daily yfinance bars. It also writes
 the raw-bar archive, outcome audit, audited DPO pairs, and train-only PPO replay rows. Use a

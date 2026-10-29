@@ -25,10 +25,16 @@ trap 'printf "Training workflow failed at line %s.\n" "$LINENO" >&2' ERR
 : "${SKIP_SMOKE:=0}"
 : "${SKIP_DPO:=0}"
 : "${SKIP_PPO:=0}"
+: "${REQUIRE_CUDA:=1}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is required. Install it, then rerun this script." >&2
   exit 1
+fi
+
+if [[ "$REQUIRE_CUDA" == "1" ]]; then
+  echo "Checking for a CUDA-capable training device..."
+  uv run python -c 'import torch; assert torch.cuda.is_available(), "CUDA is required; run this workflow on the Colab L4."'
 fi
 
 echo "Installing the locked project environment..."
