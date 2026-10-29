@@ -83,7 +83,7 @@ prediction feature; election-related text is not added to policy prompts automat
 
 ```bash
 uv run stock-agent-prepare \
-  --start 2005-01-03 --end 2026-11-10 \
+  --start 2006-10-30 --end 2026-11-10 \
   --train-end 2018-11-13T23:59:59Z \
   --validation-end 2022-11-15T23:59:59Z \
   --test-end 2026-11-10T23:59:59Z \

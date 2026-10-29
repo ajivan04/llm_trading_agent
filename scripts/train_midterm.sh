@@ -12,7 +12,7 @@ cd "$ROOT_DIR"
 trap 'printf "Training workflow failed at line %s.\n" "$LINENO" >&2' ERR
 
 : "${OUTPUT_ROOT:=artifacts/midterm-training}"
-: "${START_DATE:=2005-01-03}"
+: "${START_DATE:=2006-10-30}"
 : "${DATA_END:=2022-11-15}"
 : "${TRAIN_END:=2018-11-13T23:59:59Z}"
 : "${VALIDATION_END:=2022-11-15T23:59:59Z}"
