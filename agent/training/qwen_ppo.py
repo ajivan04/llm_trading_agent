@@ -115,7 +115,13 @@ class QwenPPOOptimizer:
         modules = stack["modules"]
         torch = modules["torch"]
         tokenizer, policy = _load_policy(stack, settings, lora)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif mps is not None and mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
         policy = policy.to(device)
         reference = _load_reference_policy(stack, settings)
         if settings.gradient_checkpointing and hasattr(policy, "gradient_checkpointing_enable"):

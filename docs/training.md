@@ -73,6 +73,16 @@ target-week test. Preparation-only runs can set `REQUIRE_CUDA=0`, but full train
 on the Colab L4. If preparation was run before the compact-prompt fix, rerun the script so the
 dataset artifact is regenerated before training.
 
+To run on macOS, use Apple MPS when available and skip the CUDA-only smoke test:
+
+```bash
+REQUIRE_CUDA=0 SKIP_SMOKE=1 \
+SFT_STEPS=1000 DPO_STEPS=500 PPO_UPDATES=100 \
+./scripts/train_midterm.sh
+```
+
+MPS/CPU execution is supported for evaluation and PPO, but will be much slower than an L4.
+
 The preparation CLI now creates those inputs directly from daily yfinance bars. It also writes
 the raw-bar archive, outcome audit, audited DPO pairs, and train-only PPO replay rows. Use a
 subset during a rehearsal; omit `--symbols` for the assignment baseline universe. The requested

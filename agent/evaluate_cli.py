@@ -48,6 +48,10 @@ def _generate(examples, adapter: Path | None, max_new_tokens: int):
     )
     if adapter is not None:
         model = PeftModel.from_pretrained(model, str(adapter), is_trainable=False)
+    if not torch.cuda.is_available():
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        device = torch.device("mps" if mps is not None and mps.is_available() else "cpu")
+        model = model.to(device)
     model.eval()
     results = {}
     max_context = int(getattr(model.config, "max_position_embeddings", 131072))
