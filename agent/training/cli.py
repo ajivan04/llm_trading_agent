@@ -38,6 +38,15 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _episode_example(row: dict[str, Any]) -> EpisodeExample:
+    """Normalize JSON-compatible message lists into the tuple contract."""
+    payload = dict(row)
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        payload["messages"] = tuple(messages)
+    return EpisodeExample(**payload)
+
+
 def _file_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -281,8 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     settings = _settings(args, data_hashes)
     if args.method == "sft":
         result = train_sft(
-            [EpisodeExample(**row) for row in train_rows],
-            [EpisodeExample(**row) for row in validation_rows], settings=settings,
+            [_episode_example(row) for row in train_rows],
+            [_episode_example(row) for row in validation_rows], settings=settings,
         )
     else:
         result = train_dpo(
