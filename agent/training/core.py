@@ -129,22 +129,45 @@ def build_sft_example(
             "use an explicit trajectory builder for selective tool supervision"
         )
     messages = (*example.messages, FrozenDict({"role": "assistant", "content": example.completion}))
+    chat_template = getattr(tokenizer, "chat_template", None)
+    supports_generation_mask = (
+        not isinstance(chat_template, str)
+        or "{% generation %}" in chat_template
+    )
+    render_kwargs: dict[str, Any] = {}
+    if supports_generation_mask:
+        render_kwargs["return_assistant_tokens_mask"] = True
     rendered = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=False,
         return_dict=True,
-        return_assistant_tokens_mask=True,
         truncation=False,
+        **render_kwargs,
     )
     if not isinstance(rendered, Mapping):
         raise TypeError("native chat template must return a mapping")
     input_ids = tuple(int(x) for x in rendered.get("input_ids", ()))
     attention = tuple(int(x) for x in rendered.get("attention_mask", (1,) * len(input_ids)))
     assistant_mask = rendered.get("assistant_masks", rendered.get("assistant_tokens_mask"))
-    if assistant_mask is None:
-        raise ValueError("tokenizer chat template did not return an assistant token mask")
-    assistant = tuple(int(x) for x in assistant_mask)
+    assistant = tuple(int(x) for x in assistant_mask) if assistant_mask is not None else ()
+    if not assistant or not any(assistant):
+        # Some Qwen revisions omit the Jinja `{% generation %}` marker and
+        # therefore cannot emit an assistant mask. The assistant completion
+        # is the suffix after rendering the prompt with its generation prompt.
+        prompt_rendered = tokenizer.apply_chat_template(
+            example.messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            truncation=False,
+        )
+        if not isinstance(prompt_rendered, Mapping):
+            raise TypeError("native chat template must return a mapping")
+        prompt_ids = tuple(int(x) for x in prompt_rendered.get("input_ids", ()))
+        if not prompt_ids or tuple(input_ids[:len(prompt_ids)]) != prompt_ids:
+            raise ValueError("unable to derive assistant token span from chat template")
+        assistant = (0,) * len(prompt_ids) + (1,) * (len(input_ids) - len(prompt_ids))
     if not input_ids or not (len(input_ids) == len(attention) == len(assistant)):
         raise ValueError("tokenizer returned inconsistent token arrays")
     if len(input_ids) > max_length:

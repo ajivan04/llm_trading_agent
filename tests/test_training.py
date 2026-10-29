@@ -40,6 +40,15 @@ class FakeTokenizer:
                 "assistant_masks": self.mask}
 
 
+class SuffixTokenizer:
+    chat_template = "{{ messages }}"
+
+    def apply_chat_template(self, messages, **kwargs):
+        if kwargs.get("add_generation_prompt"):
+            return {"input_ids": (10, 11), "attention_mask": (1, 1)}
+        return {"input_ids": (10, 11, 12, 13), "attention_mask": (1, 1, 1, 1)}
+
+
 def transition(**changes):
     values = dict(
         rollout_id="rollout-1", policy_version="policy-1", observation_hash="obs",
@@ -86,6 +95,10 @@ class SplitAndSFTTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "trajectory builder"):
             build_sft_example(trajectory_prompt, tokenizer, max_length=4)
+
+    def test_template_without_generation_marker_uses_completion_suffix(self):
+        result = build_sft_example(episode(), SuffixTokenizer(), max_length=4)
+        self.assertEqual(result.labels, (-100, -100, 12, 13))
 
 
 class DPOTests(unittest.TestCase):
