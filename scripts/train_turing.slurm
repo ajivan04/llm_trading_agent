@@ -28,7 +28,7 @@ set -Eeuo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/artifacts/midterm-training}"
 STAGE="${STAGE:-all}" # prepare, eval, sft, dpo, ppo, or all
-ENV_FILE="${ENV_FILE:-}"
+ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
 PROMPT_VERSION="${PROMPT_VERSION:-v1-midterm-election}"
 
 case "$STAGE" in
@@ -41,12 +41,14 @@ mkdir -p "$OUTPUT_ROOT"
 
 # Source credentials only when explicitly requested. Keep this file outside
 # version control with mode 600; never print its contents or the environment.
-if [[ -n "$ENV_FILE" ]]; then
-  [[ -f "$ENV_FILE" ]] || { echo "ENV_FILE does not exist: $ENV_FILE" >&2; exit 1; }
+if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
+elif [[ "$STAGE" == "prepare" || "$STAGE" == "all" ]]; then
+  echo "Missing environment file for data preparation: $ENV_FILE" >&2
+  exit 1
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
