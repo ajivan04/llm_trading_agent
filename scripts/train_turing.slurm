@@ -10,7 +10,7 @@
 # resource requests only after checking `scluster`/`idle_gpus` on Turing.
 #SBATCH --job-name=stock-agent
 #SBATCH --partition=academic
-##SBATCH --account=REPLACE_WITH_YOUR_ACCOUNT
+##SBATCH --account=ahjivan
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-gpu=8
@@ -49,8 +49,19 @@ if [[ -n "$ENV_FILE" ]]; then
   set +a
 fi
 
+if ! command -v uv >/dev/null 2>&1; then
+  # Turing provides uv as a module; batch shells may not have modules
+  # initialized automatically.
+  if [[ -f /etc/profile.d/modules.sh ]]; then
+    # shellcheck disable=SC1091
+    source /etc/profile.d/modules.sh
+  fi
+  if command -v module >/dev/null 2>&1; then
+    module load uv
+  fi
+fi
 command -v uv >/dev/null 2>&1 || {
-  echo "uv is required; install/load it on the Turing login node before sbatch." >&2
+  echo "uv is unavailable; run 'module load uv' on Turing and resubmit." >&2
   exit 1
 }
 
