@@ -56,6 +56,20 @@ configuration that does not preserve `paper_trading_only=True`.
 7. Reserve the frozen release-test ID in the durable experiment registry before the one
    permitted release-test evaluation.
 
+For the complete pre-event SFT → smoke → DPO → PPO → validation workflow, use the repository
+script from a Colab L4 or another configured training machine:
+
+```bash
+chmod +x scripts/train_midterm.sh
+SFT_STEPS=1000 DPO_STEPS=500 PPO_UPDATES=100 \
+  SYMBOLS="AAPL MSFT NVDA" \
+  ./scripts/train_midterm.sh
+```
+
+Omit `SYMBOLS` to use the full assignment universe. For a quick infrastructure rehearsal, set
+`SFT_STEPS=2 DPO_STEPS=2 PPO_UPDATES=1`; use `SKIP_SMOKE=1` only when CUDA is unavailable.
+The script does not run the held-out 2026 target-week test.
+
 The preparation CLI now creates those inputs directly from daily yfinance bars. It also writes
 the raw-bar archive, outcome audit, audited DPO pairs, and train-only PPO replay rows. Use a
 subset during a rehearsal; omit `--symbols` for the assignment baseline universe. The requested
