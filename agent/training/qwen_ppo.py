@@ -161,10 +161,15 @@ class QwenPPOOptimizer:
 
     def _prompt(self, observation: Mapping[str, Any]):
         messages = self._messages(observation)
-        token_ids = self.tokenizer.apply_chat_template(
+        rendered = self.tokenizer.apply_chat_template(
             list(messages), tokenize=True, add_generation_prompt=True,
             return_tensors="pt",
         )
+        # Transformers tokenizers may return either a tensor or a
+        # BatchEncoding mapping containing `input_ids`.
+        token_ids = rendered.get("input_ids") if isinstance(rendered, Mapping) else rendered
+        if token_ids is None:
+            raise ValueError("chat template did not return input_ids")
         if getattr(token_ids, "ndim", None) != 2 or token_ids.shape[0] != 1:
             raise ValueError("chat template must return one rank-2 token batch")
         return token_ids.to(self.policy_model.device), content_hash(messages)

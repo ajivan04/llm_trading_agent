@@ -486,6 +486,11 @@ class TinyTokenizer:
         Path(output, "tokenizer.fake").write_text("tokenizer", encoding="utf-8")
 
 
+class BatchEncodingTokenizer(TinyTokenizer):
+    def apply_chat_template(self, *args, **kwargs):
+        return {"input_ids": TinyTensor([[1, 2]])}
+
+
 class TinyState:
     def __init__(self, payload):
         self.payload = payload
@@ -537,6 +542,20 @@ class ConcretePPOCollectionTests(unittest.TestCase):
             self.assertEqual(sample.action_token_ids, (3, 4))
             self.assertEqual(environment.action, "hold")
             self.assertTrue(sample.done)
+
+    def test_qwen_accepts_batch_encoding_chat_template_result(self):
+        with tempfile.TemporaryDirectory() as adapter:
+            Path(adapter, "adapter.fake").write_text("sft", encoding="utf-8")
+            settings = TrainerSettings(
+                Path(adapter, "out"), "prompt", ("data",), adapter_checkpoint=Path(adapter))
+            optimizer = TinyQwenPPO(
+                torch_module=TinyTorch(), tokenizer=BatchEncodingTokenizer(),
+                policy_model=TinyPolicy(), reference_model=TinyPolicy(),
+                value_head=object(), optimizer=object(), settings=settings,
+                ppo=QwenPPOSettings(max_episode_steps=1),
+            )
+            prompt, _ = optimizer._prompt({"messages": [{"role": "user", "content": "state"}]})
+            self.assertEqual(prompt.shape[0], 1)
 
     def test_qwen_collection_rejects_exhausted_context(self):
         with tempfile.TemporaryDirectory() as adapter:
