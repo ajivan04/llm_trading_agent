@@ -38,6 +38,8 @@ class FakeTokenizer:
         return cls()
 
     def apply_chat_template(self, messages, **kwargs):
+        if kwargs.get("tokenize") is False:
+            return "<prompt>"
         return {
             "input_ids": [1, 2, 3], "attention_mask": [1, 1, 1],
             "assistant_masks": [0, 1, 1],
@@ -179,6 +181,21 @@ class ExecutionTests(unittest.TestCase):
             row = FakeTrainer.instances[-1].kwargs["train_dataset"][0]
             self.assertEqual(row, {"prompt": "prompt", "chosen": "chosen",
                                    "rejected": "rejected"})
+
+    def test_dpo_renders_serialized_chat_prompt_for_trl(self):
+        prompt = json.dumps([{"role": "user", "content": "state"}])
+        pair = DPOPair(prompt, "chosen", "rejected", "state", 0.2, "a", "b",
+                       audit_hash="audit")
+        validation_pair = DPOPair(
+            prompt, "chosen", "rejected", "state", 0.2, "a", "b",
+            "validation", "audit-validation")
+        with tempfile.TemporaryDirectory() as output:
+            train_dpo(
+                [pair], [validation_pair], settings=self.settings(output),
+                stack_resolver=stack,
+            )
+            row = FakeTrainer.instances[-1].kwargs["train_dataset"][0]
+            self.assertEqual(row["prompt"], "<prompt>")
 
     def test_dpo_split_is_enforced_at_trainer_boundary(self):
         train_pair = DPOPair(

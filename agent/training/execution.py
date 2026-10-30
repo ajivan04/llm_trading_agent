@@ -306,7 +306,14 @@ def train_dpo(
                 except json.JSONDecodeError:
                     decoded = None
                 if isinstance(decoded, list) and all(isinstance(item, Mapping) for item in decoded):
-                    prompt = decoded
+                    rendered_prompt = tokenizer.apply_chat_template(
+                        decoded, tokenize=False, add_generation_prompt=True,
+                    )
+                    if not isinstance(rendered_prompt, str) or not rendered_prompt:
+                        raise TypeError(
+                            "DPO chat template must render a nonempty string prompt"
+                        )
+                    prompt = rendered_prompt
             converted.append({"prompt": prompt, "chosen": pair.chosen, "rejected": pair.rejected})
         return converted
     train_data = _dataset(modules["datasets"], rows(train_pairs))
