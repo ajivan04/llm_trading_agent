@@ -45,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="price-only",
         help="point-in-time evidence sources to include in policy prompts",
     )
-    parser.add_argument("--news-lookback-days", type=int, default=30)
+    parser.add_argument("--news-lookback-days", type=int, default=60)
+    parser.add_argument("--sec-lookback-days", type=int, default=60)
     parser.add_argument("--news-limit", type=int, default=50)
     return parser
 
@@ -82,8 +83,9 @@ def _eligible_news(items, *, as_of: str, lookback_days: int):
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.news_lookback_days <= 0 or not 1 <= args.news_limit <= 1000:
-        raise ValueError("news lookback and limit must be positive")
+    if (args.news_lookback_days <= 0 or args.sec_lookback_days <= 0
+            or not 1 <= args.news_limit <= 1000):
+        raise ValueError("lookback windows must be positive and news limit must be 1..1000")
     symbols = tuple(symbol.strip().upper() for symbol in args.symbols)
     if not symbols or any(not item for item in symbols) or len(set(symbols)) != len(symbols):
         raise ValueError("symbols must be nonempty and unique")
@@ -159,7 +161,13 @@ def main(argv: list[str] | None = None) -> int:
                     eligible_news, symbol=symbol, as_of=as_of, retrieved_at=retrieved_at,
                 ))
             if args.evidence_mode in {"sec", "news-sec"}:
-                eligible_sec = tuple(item for item in sec_by_symbol[symbol] if item.eligible(as_of))
+                cutoff_at = parse_timestamp(as_of)
+                eligible_sec = tuple(
+                    item for item in sec_by_symbol[symbol]
+                    if item.eligible(as_of)
+                    and (cutoff_at - parse_timestamp(item.available_at)).days
+                    <= args.sec_lookback_days
+                )
                 extras.extend(eligible_sec[-5:])
                 for filing in eligible_sec[-5:]:
                     if filing.id not in sec_text_cache:

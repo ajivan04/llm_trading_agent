@@ -21,19 +21,21 @@ class FeatureParameters:
     """All feature windows are numbers of exchange sessions."""
 
     return_window: int = 5
+    long_return_window: int = 60
     sma_window: int = 20
     rsi_window: int = 14
     macd_fast: int = 12
     macd_slow: int = 26
     volatility_window: int = 20
+    long_volatility_window: int = 60
     volume_window: int = 20
     annualization_sessions: int = 252
-    version: str = "price-features-v1"
+    version: str = "price-features-v2-60-session-context"
 
     def __post_init__(self) -> None:
         integer_fields = (
-            "return_window", "sma_window", "rsi_window", "macd_fast",
-            "macd_slow", "volatility_window", "volume_window",
+            "return_window", "long_return_window", "sma_window", "rsi_window", "macd_fast",
+            "macd_slow", "volatility_window", "long_volatility_window", "volume_window",
             "annualization_sessions",
         )
         for name in integer_fields:
@@ -42,6 +44,8 @@ class FeatureParameters:
                 raise ValueError(f"{name} must be a positive integer")
         if self.volatility_window < 2:
             raise ValueError("volatility_window must be at least 2")
+        if self.long_volatility_window < 2:
+            raise ValueError("long_volatility_window must be at least 2")
         if self.macd_fast >= self.macd_slow:
             raise ValueError("macd_fast must be less than macd_slow")
         if not isinstance(self.version, str) or not self.version.strip():
@@ -50,11 +54,13 @@ class FeatureParameters:
     def to_dict(self) -> dict[str, int | str]:
         return {
             "return_window": self.return_window,
+            "long_return_window": self.long_return_window,
             "sma_window": self.sma_window,
             "rsi_window": self.rsi_window,
             "macd_fast": self.macd_fast,
             "macd_slow": self.macd_slow,
             "volatility_window": self.volatility_window,
+            "long_volatility_window": self.long_volatility_window,
             "volume_window": self.volume_window,
             "annualization_sessions": self.annualization_sessions,
             "version": self.version,
@@ -190,6 +196,9 @@ class PriceFeatureBuilder:
         trailing_return = None
         if len(closes) >= p.return_window + 1:
             trailing_return = closes[-1] / closes[-1 - p.return_window] - 1.0
+        long_trailing_return = None
+        if len(closes) >= p.long_return_window + 1:
+            long_trailing_return = closes[-1] / closes[-1 - p.long_return_window] - 1.0
         sma_ratio = None
         if len(closes) >= p.sma_window:
             sma_ratio = closes[-1] / (sum(closes[-p.sma_window:]) / p.sma_window)
@@ -208,6 +217,18 @@ class PriceFeatureBuilder:
             mean = sum(returns) / len(returns)
             variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
             realized_volatility = math.sqrt(variance * p.annualization_sessions)
+        long_realized_volatility = None
+        if len(closes) >= p.long_volatility_window + 1:
+            returns = [
+                new / old - 1.0
+                for old, new in zip(
+                    closes[-p.long_volatility_window - 1:-1],
+                    closes[-p.long_volatility_window:],
+                )
+            ]
+            mean = sum(returns) / len(returns)
+            variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
+            long_realized_volatility = math.sqrt(variance * p.annualization_sessions)
         relative_volume = None
         if len(volumes) >= p.volume_window + 1:
             previous_average = sum(volumes[-p.volume_window - 1:-1]) / p.volume_window
@@ -217,10 +238,12 @@ class PriceFeatureBuilder:
         source_fingerprints = tuple(content_hash(row[0]) for row in bars)
         features = {
             "trailing_return": trailing_return,
+            "trailing_return_60s": long_trailing_return,
             "sma_ratio": sma_ratio,
             "rsi": _rsi(closes, p.rsi_window),
             "macd": macd,
             "realized_volatility": realized_volatility,
+            "realized_volatility_60s": long_realized_volatility,
             "relative_volume": relative_volume,
         }
         values = {

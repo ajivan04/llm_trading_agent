@@ -1,5 +1,6 @@
 import math
 import unittest
+from datetime import date, timedelta
 
 from agent.contracts import Evidence
 from agent.data.prices import DailyPriceBar
@@ -81,10 +82,12 @@ class PriceFeatureTests(unittest.TestCase):
             result.values["features"],
             {
                 "trailing_return": None,
+                "trailing_return_60s": None,
                 "sma_ratio": None,
                 "rsi": None,
                 "macd": None,
                 "realized_volatility": None,
+                "realized_volatility_60s": None,
                 "relative_volume": None,
             },
         )
@@ -111,6 +114,20 @@ class PriceFeatureTests(unittest.TestCase):
             "point_in_time_total_return_from_raw_close_actions",
         )
         self.assertEqual(first.values["provider_adjusted_close_usage"], "audit_only")
+
+    def test_long_context_features_use_sixty_sessions(self) -> None:
+        bars = [
+            price_bar(
+                index,
+                session=(date(2025, 12, 1) + timedelta(days=index - 1)).isoformat(),
+            )
+            for index in range(1, 62)
+        ]
+        result = PriceFeatureBuilder().build(
+            bars, symbol="AAPL", as_of="2026-02-01T21:00:00Z")
+        self.assertIsNotNone(result.values["features"]["trailing_return_60s"])
+        self.assertIsNotNone(result.values["features"]["realized_volatility_60s"])
+        self.assertEqual(result.values["windows"]["long_return_window"], 60)
 
     def test_duplicate_symbol_session_is_rejected(self) -> None:
         first = price_bar(1)

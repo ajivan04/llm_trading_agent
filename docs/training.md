@@ -89,7 +89,8 @@ subset during a rehearsal; omit `--symbols` for the assignment baseline universe
 price range must include a warm-up period and one complete outcome session after `--test-end`.
 
 To include the NLP evidence required by the project, prepare a separate artifact with
-point-in-time Alpha Vantage sentiment and SEC evidence. SEC excerpts are bounded and retain
+point-in-time Alpha Vantage sentiment and SEC evidence. The feature context includes a
+60-session return/volatility view, while news and SEC evidence use 60-day lookbacks. SEC excerpts are bounded and retain
 their acceptance timestamps; no filing/report date is used as availability. These credentials
 are read from the environment and never written to the artifact:
 
@@ -97,7 +98,7 @@ are read from the environment and never written to the artifact:
 ALPHA_VANTAGE_API_KEY="$ALPHA_VANTAGE_API_KEY" \
 SEC_USER_AGENT="$SEC_USER_AGENT" \
 uv run stock-agent-prepare \
-  --start 2006-10-30 --end 2022-11-15 \
+  --start 2006-08-01 --end 2022-11-15 \
   --train-end 2018-11-13T23:59:59Z \
   --validation-end 2022-11-15T23:59:59Z \
   --test-end 2026-11-10T23:59:59Z \
@@ -120,7 +121,7 @@ prediction feature; election-related text is not added to policy prompts automat
 
 ```bash
 uv run stock-agent-prepare \
-  --start 2006-10-30 --end 2026-11-10 \
+  --start 2006-08-01 --end 2026-11-10 \
   --train-end 2018-11-13T23:59:59Z \
   --validation-end 2022-11-15T23:59:59Z \
   --test-end 2026-11-10T23:59:59Z \
