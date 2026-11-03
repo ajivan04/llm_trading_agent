@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import math
+from html import unescape
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from urllib.request import urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
 from agent.contracts import Evidence, content_hash, normalize_timestamp, parse_timestamp
 from agent.data.cache import CacheIdentity, SqliteResponseCache
@@ -258,6 +259,126 @@ class AlphaVantageNewsAdapter:
         )
 
 
+class AlpacaNewsAdapter:
+    """Point-in-time news adapter using Alpaca's free market-data endpoint.
+
+    Alpaca does not provide sentiment scores, so articles are retained as text
+    evidence and sentiment is explicitly represented as neutral/unknown rather
+    than fabricated. The public interface matches ``AlphaVantageNewsAdapter``.
+    """
+
+    def __init__(self, api_key: str, secret_key: str, request=None) -> None:
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("Alpaca API key is required")
+        if not isinstance(secret_key, str) or not secret_key.strip():
+            raise ValueError("Alpaca secret key is required")
+        self._api_key = api_key.strip()
+        self._secret_key = secret_key.strip()
+        self._request = request or self._default_request
+
+    @staticmethod
+    def _default_request(params):
+        from urllib.parse import urlencode
+        params = dict(params)
+        api_key = params.pop("_api_key")
+        secret_key = params.pop("_secret_key")
+        request = UrlRequest(
+            "https://data.alpaca.markets/v1beta1/news?" + urlencode(params),
+            headers={
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": secret_key,
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS endpoint
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - network dependent
+            raise RuntimeError("Alpaca news request failed") from exc
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("Alpaca returned an invalid news response")
+        return payload
+
+    def fetch(self, symbols, *, time_from, time_to, as_of, retrieved_at, limit=50):
+        normalized = tuple(str(symbol).strip().upper() for symbol in symbols)
+        if not normalized or len(normalized) != len(set(normalized)):
+            raise ValueError("symbols must be nonempty and unique")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        start, end = parse_timestamp(time_from), parse_timestamp(time_to)
+        cutoff, retrieved = parse_timestamp(as_of), parse_timestamp(retrieved_at)
+        if start >= end or end > cutoff:
+            raise ValueError("news window must be ordered and end at or before as_of")
+
+        # Alpaca accepts comma-separated symbols; batching keeps requests well
+        # below URL/provider limits while remaining far cheaper than one request
+        # per ticker on Alpha Vantage.
+        result = []
+        for offset in range(0, len(normalized), 25):
+            batch = normalized[offset:offset + 25]
+            page_token = None
+            for _page in range(1000):
+                params = {
+                    "symbols": ",".join(batch),
+                    "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "limit": str(limit),
+                    "sort": "asc",
+                    "_api_key": self._api_key,
+                    "_secret_key": self._secret_key,
+                }
+                if page_token:
+                    params["page_token"] = page_token
+                payload = self._request(params)
+                if any(key in payload for key in ("message", "code", "error")):
+                    raise RuntimeError("Alpaca news request was rejected or rate limited")
+                articles = payload.get("news")
+                if not isinstance(articles, list):
+                    raise RuntimeError("Alpaca returned an invalid news feed")
+                for raw in articles:
+                    if not isinstance(raw, Mapping):
+                        raise ValueError("Alpaca news item must be an object")
+                    published = parse_timestamp(raw.get("created_at") or raw.get("updated_at"))
+                    if published < start or published > end or published > cutoff:
+                        continue
+                    article_symbols = {
+                        str(item).strip().upper() for item in raw.get("symbols", [])
+                    }
+                    for symbol in batch:
+                        if symbol not in article_symbols:
+                            continue
+                        title = unescape(str(raw.get("headline") or "").strip())
+                        summary = unescape(str(raw.get("summary") or raw.get("content") or "").strip())
+                        url = canonicalize_url(raw.get("url"))
+                        values = {
+                            "canonical_url": url,
+                            "published_at": normalize_timestamp(published),
+                            "title": title,
+                            "summary": summary,
+                            "publisher": str(raw.get("source") or "Alpaca").strip(),
+                            "topics": [],
+                            "relevance_score": 1.0,
+                            "sentiment_score": None,
+                            "sentiment_label": "unknown",
+                        }
+                        values["article_content_hash"] = content_hash(values)
+                        record_hash = content_hash(values)
+                        result.append(Evidence(
+                            id=f"alpaca-news:{symbol}:{published.strftime('%Y%m%dT%H%M%S')}:{record_hash[:16]}",
+                            source="alpaca.news", symbol=symbol,
+                            observed_at=published, available_at=published,
+                            retrieved_at=retrieved, text=f"{title}\n{summary}".strip(),
+                            values=values, url=url, entitlement="alpaca",
+                            raw_content_hash=record_hash,
+                            transformation_version="alpaca-news-v1",
+                        ))
+                page_token = payload.get("next_page_token")
+                if not page_token:
+                    break
+            else:
+                raise RuntimeError("Alpaca news pagination exceeded the safety limit")
+        return tuple(sorted(result, key=lambda item: (item.available_at, item.id)))
+
+
 class CachedNewsAdapter:
     """Enforce the assignment's 24-hour reuse policy on normalized snapshots."""
 
@@ -328,7 +449,7 @@ def aggregate_news(
     items = sorted(
         (
             item for item in evidence
-            if item.source == "alpha_vantage.news"
+            if item.source in {"alpha_vantage.news", "alpaca.news"}
             and item.symbol == normalized_symbol
             and item.eligible(cutoff)
         ),
@@ -348,8 +469,9 @@ def aggregate_news(
         weighted = []
         for item in items:
             relevance = _finite(item.values.get("relevance_score"), "relevance_score")
-            score = _finite(item.values.get("sentiment_score"), "sentiment_score")
-            weighted.append((relevance, score))
+            raw_score = item.values.get("sentiment_score")
+            if raw_score is not None:
+                weighted.append((relevance, _finite(raw_score, "sentiment_score")))
         total_weight = sum(weight for weight, _ in weighted)
         mean = (sum(weight * score for weight, score in weighted) / total_weight
                 if total_weight > 0 else None)

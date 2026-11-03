@@ -4,7 +4,8 @@ from pathlib import Path
 
 from agent.data.cache import SqliteResponseCache
 from agent.data.news import (
-    AlphaVantageNewsAdapter, CachedNewsAdapter, aggregate_news, canonicalize_url,
+    AlphaVantageNewsAdapter, AlpacaNewsAdapter, CachedNewsAdapter, aggregate_news,
+    canonicalize_url,
 )
 from agent.prepare_cli import _eligible_news
 
@@ -166,6 +167,48 @@ class AlphaVantageNewsTests(unittest.TestCase):
             canonicalize_url("HTTPS://Example.COM/a?z=2&utm_campaign=x&a=1#part"),
             "https://example.com/a?a=1&z=2",
         )
+
+
+class AlpacaNewsTests(unittest.TestCase):
+    def test_parses_batched_articles_without_fabricating_sentiment(self):
+        calls = []
+
+        def request(params):
+            calls.append(dict(params))
+            return {"news": [{
+                "headline": "A &amp; B update",
+                "summary": "Summary &amp; details",
+                "source": "Wire",
+                "created_at": "2026-01-05T14:00:00Z",
+                "url": "https://example.com/story",
+                "symbols": ["AAPL", "MSFT"],
+            }]}
+
+        items = AlpacaNewsAdapter("key", "secret", request).fetch(
+            ("AAPL", "MSFT"), time_from="2026-01-01T00:00:00Z",
+            time_to="2026-01-06T00:00:00Z", as_of="2026-01-06T00:00:00Z",
+            retrieved_at="2026-01-06T01:00:00Z", limit=50,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual({item.symbol for item in items}, {"AAPL", "MSFT"})
+        self.assertEqual(items[0].source, "alpaca.news")
+        self.assertIsNone(items[0].values["sentiment_score"])
+        self.assertIn("A & B", items[0].text)
+
+    def test_rejects_future_articles(self):
+        adapter = AlpacaNewsAdapter(
+            "key", "secret", lambda _params: {"news": [{
+                "headline": "Future", "summary": "", "source": "Wire",
+                "created_at": "2026-01-07T14:00:00Z", "url": "https://e.com/f",
+                "symbols": ["AAPL"],
+            }]},
+        )
+        items = adapter.fetch(
+            ("AAPL",), time_from="2026-01-01T00:00:00Z",
+            time_to="2026-01-06T00:00:00Z", as_of="2026-01-06T00:00:00Z",
+            retrieved_at="2026-01-06T01:00:00Z",
+        )
+        self.assertEqual(items, ())
 
 
 class NewsAggregationTests(unittest.TestCase):

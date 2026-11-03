@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 from agent.contracts import parse_timestamp
 from agent.data import (
-    AlphaVantageNewsAdapter,
+    AlphaVantageNewsAdapter, AlpacaNewsAdapter,
     SecDataAdapter,
     XNYSCalendar,
     YFinancePriceAdapter,
@@ -48,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--news-lookback-days", type=int, default=60)
     parser.add_argument("--sec-lookback-days", type=int, default=60)
     parser.add_argument("--news-limit", type=int, default=50)
+    parser.add_argument(
+        "--news-provider", choices=("alpaca", "alpha-vantage"),
+        default=os.environ.get("NEWS_PROVIDER", "alpaca"),
+    )
     return parser
 
 
@@ -119,10 +123,13 @@ def main(argv: list[str] | None = None) -> int:
         sec_by_symbol: dict[str, tuple] = defaultdict(tuple)
         sec_text_cache: dict[str, object] = {}
         if args.evidence_mode in {"news", "news-sec"}:
-            api_key = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
-            if not api_key:
-                raise ValueError("ALPHA_VANTAGE_API_KEY is required for news evidence")
-            news_adapter = AlphaVantageNewsAdapter(api_key)
+            if args.news_provider == "alpaca":
+                api_key = os.environ.get("ALPACA_API_KEY", "")
+                secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+                news_adapter = AlpacaNewsAdapter(api_key, secret_key)
+            else:
+                api_key = os.environ.get("ALPHA_VANTAGE_API_KEY", "")
+                news_adapter = AlphaVantageNewsAdapter(api_key)
             # Fetch the complete historical range once; the per-snapshot provider
             # below applies the lookback relative to each decision cutoff. A final-
             # window fetch would silently omit 2006/2010/2014/2018 event weeks.
@@ -200,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         "output": str(args.output), "symbols": len(symbols),
         "training_examples": len(prepared.dataset.manifest.split_example_ids["train"]),
         "evidence_mode": args.evidence_mode,
+        "news_provider": (
+            args.news_provider if args.evidence_mode in {"news", "news-sec"} else None
+        ),
         "evidence_records": len(prepared.evidence_rows),
         "sec_evidence_scope": (
             "submissions-metadata-and-bounded-text"

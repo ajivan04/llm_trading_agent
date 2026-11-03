@@ -29,9 +29,9 @@ collection may use these environment variables:
 
 | Name | Required for | Where to configure |
 |---|---|---|
-| `ALPACA_API_KEY` | Alpaca historical data and paper account | Local environment or Colab Secrets |
-| `ALPACA_SECRET_KEY` | Alpaca historical data and paper account | Local environment or Colab Secrets |
-| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage news/data | Local environment or Colab Secrets |
+| `ALPACA_API_KEY` | Alpaca historical news and paper account | Local environment or Colab Secrets |
+| `ALPACA_SECRET_KEY` | Alpaca historical news and paper account | Local environment or Colab Secrets |
+| `ALPHA_VANTAGE_API_KEY` | Optional legacy Alpha Vantage endpoints | Local environment or Colab Secrets |
 | `FRED_API_KEY` | ALFRED/FRED macro vintages | Local environment or Colab Secrets |
 | `HF_TOKEN` | Optional Hugging Face authentication/cache limits | Local environment or Colab Secrets |
 | `SEC_USER_AGENT` | SEC request identification; not a secret | Environment or notebook configuration |
@@ -41,6 +41,10 @@ experiment registry, or captured output. Locally, export them in the shell or us
 ignored `.env`; the project intentionally does not load `.env` automatically. In Colab,
 open the key icon, create the names above, disable notebook access sharing, and read them
 with `google.colab.userdata.get`. Do not print the returned values.
+
+News preparation uses Alpaca by default. To deliberately use the legacy Alpha Vantage
+adapter, pass `--news-provider alpha-vantage`; free Alpha Vantage keys cannot use
+`NEWS_SENTIMENT`.
 
 Alpaca credentials must come from a paper-trading account. The code must reject any
 configuration that does not preserve `paper_trading_only=True`.
@@ -89,13 +93,15 @@ subset during a rehearsal; omit `--symbols` for the assignment baseline universe
 price range must include a warm-up period and one complete outcome session after `--test-end`.
 
 To include the NLP evidence required by the project, prepare a separate artifact with
-point-in-time Alpha Vantage sentiment and SEC evidence. The feature context includes a
+point-in-time Alpaca news and SEC evidence. Alpaca does not provide sentiment scores, so
+the model receives the article text and explicit missing/unknown sentiment fields. The feature context includes a
 60-session return/volatility view, while news and SEC evidence use 60-day lookbacks. SEC excerpts are bounded and retain
 their acceptance timestamps; no filing/report date is used as availability. These credentials
 are read from the environment and never written to the artifact:
 
 ```bash
-ALPHA_VANTAGE_API_KEY="$ALPHA_VANTAGE_API_KEY" \
+ALPACA_API_KEY="$ALPACA_API_KEY" \
+ALPACA_SECRET_KEY="$ALPACA_SECRET_KEY" \
 SEC_USER_AGENT="$SEC_USER_AGENT" \
 uv run stock-agent-prepare \
   --start 2006-11-03 --end 2022-11-15 \
