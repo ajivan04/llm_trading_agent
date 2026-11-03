@@ -6,6 +6,7 @@ from agent.data.cache import SqliteResponseCache
 from agent.data.news import (
     AlphaVantageNewsAdapter, CachedNewsAdapter, aggregate_news, canonicalize_url,
 )
+from agent.prepare_cli import _eligible_news
 
 
 def article(
@@ -78,6 +79,17 @@ class AlphaVantageNewsTests(unittest.TestCase):
         self.assertNotEqual(items[0].id, changed[0].id)
         self.assertEqual(items[0].values["publisher"], "Example Wire")
         self.assertEqual(items[0].values["topics"][0]["topic"], "Earnings")
+
+    def test_snapshot_lookback_includes_pre_cutoff_and_excludes_later_items(self):
+        earlier = article(published="20260108T140000", url="https://example.com/earlier")
+        later = article(published="20260111T140000", url="https://example.com/later")
+        items, _ = self.fetch(
+            {"AAPL": {"feed": [earlier, later]}},
+            time_to="2026-01-12T00:00:00Z", as_of="2026-01-12T00:00:00Z",
+            retrieved_at="2026-01-12T01:00:00Z",
+        )
+        selected = _eligible_news(items, as_of="2026-01-10T00:00:00Z", lookback_days=3)
+        self.assertEqual([item.url for item in selected], ["https://example.com/earlier"])
         self.assertEqual(items[0].values["relevance_score"], 0.8)
 
     def test_conflicting_same_url_revision_is_rejected(self):

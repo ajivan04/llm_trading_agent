@@ -63,9 +63,32 @@ run_eval() {
     "$@"
 }
 
+run_portfolio() {
+  local name="$1"
+  local predictions="$PREPARED_ROOT/eval-$name/predictions.jsonl"
+  local output="$PREPARED_ROOT/portfolio-$name"
+  [[ -f "$predictions" ]] || { echo "Missing predictions: $predictions" >&2; exit 1; }
+  if [[ -f "$output/portfolio_metrics.json" ]]; then
+    echo "$name portfolio replay already exists; skipping."
+    return 0
+  fi
+  uv run stock-agent-portfolio-evaluate \
+    --prepared "$PREPARED_ROOT" \
+    --predictions "$predictions" \
+    --split validation \
+    --output "$output" \
+    --initial-cash 100000 \
+    --cost-bps 5 \
+    --max-qty 50
+}
+
 run_eval base
+run_portfolio base
 run_eval sft --adapter "$PREPARED_ROOT/sft"
+run_portfolio sft
 run_eval dpo --adapter "$PREPARED_ROOT/dpo"
+run_portfolio dpo
 run_eval ppo --adapter "$PREPARED_ROOT/ppo/adapter"
+run_portfolio ppo
 
 echo "Validation evaluations completed under: $PREPARED_ROOT"

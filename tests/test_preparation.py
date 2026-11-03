@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agent.contracts import Evidence, content_hash
 from agent.data.prices import DailyPriceBar
 from agent.datasets import load_dataset_artifact
 from agent.preparation import PreparationSettings, prepare_training_artifacts
@@ -108,6 +109,25 @@ class PreparationTests(unittest.TestCase):
             tuple(item.example_id for item in prepared.dataset.examples),
             ("AAPL:2026-01-02", "AAPL:2026-01-06"),
         )
+
+    def test_evidence_provider_is_point_in_time_and_archived(self):
+        evidence = Evidence(
+            id="news:test", source="alpha_vantage.news", symbol="AAPL",
+            observed_at="2026-01-02T20:00:00Z", available_at="2026-01-02T20:00:00Z",
+            retrieved_at="2026-02-01T00:00:00Z", text="historical headline",
+            values={"sentiment_score": 0.5}, raw_content_hash=content_hash("news"),
+        )
+        prepared = prepare_training_artifacts(
+            {"AAPL": self.bars}, settings=PreparationSettings(
+                self.settings.train_end, self.settings.validation_end, self.settings.test_end,
+                evidence_mode="news",
+            ), next_session_resolver={
+                first.session: second.session
+                for first, second in zip(self.bars, self.bars[1:], strict=False)
+            }.__getitem__, evidence_provider=lambda _symbol, _as_of: (evidence,),
+        )
+        self.assertEqual(len(prepared.evidence_rows), 1)
+        self.assertIn("news:test", prepared.dataset.examples[0].messages[1]["content"])
 
 
 if __name__ == "__main__":

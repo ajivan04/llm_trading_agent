@@ -88,6 +88,30 @@ the raw-bar archive, outcome audit, audited DPO pairs, and train-only PPO replay
 subset during a rehearsal; omit `--symbols` for the assignment baseline universe. The requested
 price range must include a warm-up period and one complete outcome session after `--test-end`.
 
+To include the NLP evidence required by the project, prepare a separate artifact with
+point-in-time Alpha Vantage sentiment and SEC evidence. SEC excerpts are bounded and retain
+their acceptance timestamps; no filing/report date is used as availability. These credentials
+are read from the environment and never written to the artifact:
+
+```bash
+ALPHA_VANTAGE_API_KEY="$ALPHA_VANTAGE_API_KEY" \
+SEC_USER_AGENT="$SEC_USER_AGENT" \
+uv run stock-agent-prepare \
+  --start 2006-10-30 --end 2022-11-15 \
+  --train-end 2018-11-13T23:59:59Z \
+  --validation-end 2022-11-15T23:59:59Z \
+  --test-end 2026-11-10T23:59:59Z \
+  --output artifacts/midterm-news-sec \
+  --regime midterm-election \
+  --evidence-mode news-sec
+```
+
+Use separate output directories for `price-only`, `news`, `sec`, and `news-sec` so their
+dataset and artifact hashes remain comparable and isolated. The existing price-only artifact
+must not be described as the NLP-enabled result. SEC coverage follows the available
+submissions payload; inspect the evidence manifest and archive counts before treating a
+long historical window as complete.
+
 For the 2026 midterm evaluation, use the event-regime mode. It keeps the 2026 target year out
 of training, uses analogous Monday-through-Sunday event weeks from 2006, 2010, 2014, and 2018
 for training, and uses 2022 as validation. The target window is November 2–8, with outcomes
@@ -174,6 +198,26 @@ uv run stock-agent-evaluate \
   --adapter artifacts/sft-smoke \
   --output artifacts/eval-sft-validation
 ```
+
+For portfolio-level validation, replay the generated decisions through a sequential
+paper portfolio. This starts at `$100,000`, carries cash and shares across sessions,
+applies transaction costs and quantity/cash constraints, and writes profit, return,
+drawdown, turnover, invalid decisions, and an equity curve:
+
+```bash
+uv run stock-agent-portfolio-evaluate \
+  --prepared artifacts/dataset-v1 \
+  --predictions artifacts/eval-sft-validation/predictions.jsonl \
+  --split validation \
+  --output artifacts/portfolio-sft-validation \
+  --initial-cash 100000 \
+  --cost-bps 5 \
+  --max-qty 50
+```
+
+This replay consumes predictions generated from point-in-time prompts; it does not
+retrain or expose future prices to the policy. The final target-week test should use
+the same replay command against a separately frozen test artifact after outcomes mature.
 
 Run `python3 -m unittest discover -s tests -v` before training. The GPU smoke command in
 the training CLI should be run before a long job; it verifies model load, optimizer steps,

@@ -10,14 +10,37 @@ import math
 import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime
+from html.parser import HTMLParser
 from typing import Any
 
 from agent.contracts import Evidence, content_hash, normalize_timestamp, parse_timestamp
 
 
 JsonRequest = Callable[..., Mapping[str, Any]]
+TextRequest = Callable[..., str]
 AvailabilityResolver = Callable[[Mapping[str, Any]], str | datetime]
 _ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+
+
+class _VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"script", "style", "noscript"}:
+            self._hidden += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style", "noscript"} and self._hidden:
+            self._hidden -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden:
+            text = " ".join(data.split())
+            if text:
+                self.parts.append(text)
 
 
 def normalize_cik(value: str | int) -> str:
@@ -118,6 +141,7 @@ class SecDataAdapter:
         user_agent: str,
         request: JsonRequest,
         availability_resolver: AvailabilityResolver | None = None,
+        text_request: TextRequest | None = None,
     ) -> None:
         user_agent = _required_text(user_agent, "user_agent")
         if "@" not in user_agent or " " not in user_agent:
@@ -127,6 +151,7 @@ class SecDataAdapter:
         self.user_agent = user_agent
         self._request = request
         self._availability_resolver = availability_resolver
+        self._text_request = text_request
 
     def _get(self, url: str) -> Mapping[str, Any]:
         payload = self._request(
@@ -167,6 +192,48 @@ class SecDataAdapter:
         return self.normalize_submissions(
             filings["recent"], cik=normalized_cik, symbol=symbol, as_of=as_of,
             retrieved_at=retrieved_at, forms=forms,
+        )
+
+    def fetch_filing_text(
+        self, filing: Evidence, *, as_of: str | datetime, retrieved_at: str | datetime,
+        max_chars: int = 4000,
+    ) -> Evidence:
+        """Fetch a bounded visible-text excerpt from an already eligible filing."""
+        if filing.source != "sec.submissions" or not filing.url or not filing.accession_id:
+            raise ValueError("filing text requires a SEC submission evidence record")
+        if not filing.eligible(as_of):
+            raise ValueError("filing is not eligible at the requested cutoff")
+        if type(max_chars) is not int or not 256 <= max_chars <= 20_000:
+            raise ValueError("max_chars must be between 256 and 20000")
+        if self._text_request is None:
+            raise RuntimeError("SEC text request function is not configured")
+        raw = self._text_request(
+            filing.url,
+            headers={"User-Agent": self.user_agent, "Accept": "text/html"},
+        )
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("SEC filing text response was empty")
+        parser = _VisibleTextParser()
+        parser.feed(raw)
+        excerpt = " ".join(parser.parts).strip()[:max_chars].strip()
+        if not excerpt:
+            raise ValueError("SEC filing contained no visible text")
+        values = {
+            "source_filing_id": filing.id,
+            "accession": filing.accession_id,
+            "form": filing.values.get("form"),
+            "excerpt_chars": len(excerpt),
+            "bounded": True,
+        }
+        digest = content_hash({"filing": filing.id, "excerpt": excerpt})
+        return Evidence(
+            id=f"sec:filing-text:{filing.accession_id}:{digest[:16]}",
+            source="sec.filing_text", symbol=filing.symbol,
+            observed_at=filing.observed_at, available_at=filing.available_at,
+            retrieved_at=normalize_timestamp(retrieved_at),
+            text=f"SEC {filing.values.get('form', 'filing')} excerpt: {excerpt}",
+            values=values, url=filing.url, accession_id=filing.accession_id,
+            raw_content_hash=digest, transformation_version="sec-filing-text-v1",
         )
 
     def normalize_submissions(

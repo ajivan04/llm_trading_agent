@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from agent.contracts import Decision, canonical_json, content_hash
+from agent.contracts import Decision, Evidence, canonical_json, content_hash
 from agent.data.prices import DailyPriceBar
 from agent.datasets import DatasetArtifact, HistoricalDatasetBuilder, HistoricalEpisode
 from agent.features import FeatureParameters, PriceFeatureBuilder
@@ -29,6 +29,7 @@ class PreparationSettings:
     universe_version: str = "assignment-baseline-v1"
     allowed_decision_sessions: tuple[str, ...] = ()
     regime_id: str = "chronological-v1"
+    evidence_mode: str = "price-only"
 
     def __post_init__(self) -> None:
         for name in ("initial_cash", "cost_bps", "minimum_preference_margin"):
@@ -50,6 +51,8 @@ class PreparationSettings:
         object.__setattr__(self, "allowed_decision_sessions", tuple(sorted(set(sessions))))
         if not isinstance(self.regime_id, str) or not self.regime_id.strip():
             raise ValueError("regime_id must be nonempty")
+        if self.evidence_mode not in {"price-only", "news", "sec", "news-sec"}:
+            raise ValueError("evidence_mode must be price-only, news, sec, or news-sec")
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,8 @@ class PreparedArtifacts:
     source_rows: tuple[Mapping[str, object], ...]
     source_hash: str
     settings_hash: str
+    evidence_rows: tuple[Mapping[str, object], ...] = ()
+    evidence_mode: str = "price-only"
 
     @property
     def artifact_hash(self) -> str:
@@ -69,6 +74,8 @@ class PreparedArtifacts:
             "dpo": self.dpo,
             "outcome_audit": self.outcome_audit,
             "ppo_train": self.ppo_train,
+            "evidence_rows": self.evidence_rows,
+            "evidence_mode": self.evidence_mode,
             "source_hash": self.source_hash,
             "settings_hash": self.settings_hash,
         })
@@ -78,6 +85,7 @@ class PreparedArtifacts:
         output.mkdir(parents=True, exist_ok=True)
         self.dataset.write(output / "dataset")
         _write_jsonl(output / "price-bars.jsonl", self.source_rows)
+        _write_jsonl(output / "evidence.jsonl", self.evidence_rows)
         _write_jsonl(output / "dpo-train.jsonl", self.dpo.get("train", ()))
         _write_jsonl(output / "dpo-validation.jsonl", self.dpo.get("validation", ()))
         _write_jsonl(output / "outcome-audit.jsonl", self.outcome_audit)
@@ -90,6 +98,7 @@ class PreparedArtifacts:
             "dataset_hash": self.dataset.manifest.dataset_hash,
             "source_hash": self.source_hash,
             "settings_hash": self.settings_hash,
+            "evidence_mode": self.evidence_mode,
             "counts": {
                 "sft": {
                     split: len(self.dataset.manifest.split_example_ids[split])
@@ -98,6 +107,7 @@ class PreparedArtifacts:
                 "dpo_train": len(self.dpo.get("train", ())),
                 "dpo_validation": len(self.dpo.get("validation", ())),
                 "ppo_train": len(self.ppo_train),
+                "evidence": len(self.evidence_rows),
             },
         }) + "\n")
 
@@ -119,7 +129,7 @@ def _completion(
         symbol=symbol, action=action, qty=qty,
         reason=(
             "Counterfactual expert label selected after modeled costs; the policy input "
-            "contains only point-in-time price and feature evidence."
+            "contains only point-in-time evidence."
         ),
         evidence_ids=evidence_ids,
     ).to_dict()]})
@@ -170,6 +180,7 @@ def prepare_training_artifacts(
     settings: PreparationSettings,
     next_session_resolver: Callable[[str], str],
     feature_parameters: FeatureParameters | None = None,
+    evidence_provider: Callable[[str, str], Sequence[Evidence]] | None = None,
 ) -> PreparedArtifacts:
     """Build method inputs while keeping future prices outside observations."""
     if not bars_by_symbol:
@@ -179,6 +190,7 @@ def prepare_training_artifacts(
     episodes: list[HistoricalEpisode] = []
     outcomes: dict[str, tuple[dict[str, float], float, float]] = {}
     source_rows: list[Mapping[str, object]] = []
+    evidence_rows: dict[str, Evidence] = {}
 
     for raw_symbol, raw_bars in sorted(bars_by_symbol.items()):
         symbol = raw_symbol.strip().upper()
@@ -204,7 +216,16 @@ def prepare_training_artifacts(
             feature = feature_builder.build(
                 history, symbol=symbol, as_of=current.close_at,
             )
-            evidence = (current_evidence, feature)
+            extra_evidence = tuple(
+                evidence_provider(symbol, current.close_at) if evidence_provider else ()
+            )
+            if any(not isinstance(item, Evidence) for item in extra_evidence):
+                raise TypeError("evidence_provider must return Evidence records")
+            for item in extra_evidence:
+                if item.symbol not in {None, symbol} or not item.eligible(current.close_at):
+                    raise ValueError("evidence_provider returned ineligible evidence")
+                evidence_rows[item.id] = item
+            evidence = (current_evidence, feature, *extra_evidence)
             evidence_ids = tuple(item.id for item in evidence)
             account = {
                 "cash": settings.initial_cash,
@@ -302,5 +323,7 @@ def prepare_training_artifacts(
         outcome_audit=tuple(audits), ppo_train=tuple(ppo_rows),
         source_rows=ordered_sources, source_hash=content_hash(ordered_sources),
         settings_hash=content_hash(settings),
+        evidence_rows=tuple(evidence_rows[key].to_dict() for key in sorted(evidence_rows)),
+        evidence_mode=settings.evidence_mode,
     )
 

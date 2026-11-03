@@ -2,6 +2,7 @@
 
 from .benchmarks import MarketSession, benchmark_curves
 from .metrics import block_bootstrap_return_ci, exposure_match_returns, financial_metrics
+from .portfolio import PortfolioReplayResult, replay_predictions, write_result
 from .model import EvaluationOutcome, load_outcomes, score_generations
 from .regimes import ElectionRegimePlan, ElectionWindow, build_midterm_regime_plan, midterm_election_date
 from .registry import ExperimentRegistry, ExperimentRunner
@@ -15,6 +16,7 @@ __all__ = [
     "EpisodeWindow", "ExperimentRegistry", "ExperimentRunner", "Fold", "MarketSession",
     "benchmark_curves", "block_bootstrap_return_ci", "exposure_match_returns",
     "financial_metrics", "purged_split", "rolling_folds",
+    "PortfolioReplayResult", "replay_predictions", "write_result",
     "EvaluationOutcome", "load_outcomes", "score_generations",
     "ElectionRegimePlan", "ElectionWindow", "build_midterm_regime_plan",
     "midterm_election_date",

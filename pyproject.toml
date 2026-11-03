@@ -34,6 +34,7 @@ dev = [
 [project.scripts]
 stock-agent-dataset = "agent.dataset_cli:main"
 stock-agent-evaluate = "agent.evaluate_cli:main"
+stock-agent-portfolio-evaluate = "agent.portfolio_eval_cli:main"
 stock-agent-prepare = "agent.prepare_cli:main"
 stock-agent-train = "agent.training.cli:main"
 

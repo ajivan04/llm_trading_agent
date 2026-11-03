@@ -30,6 +30,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/artifacts/midterm-training}"
 STAGE="${STAGE:-all}" # prepare, eval, sft, dpo, ppo, or all
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/.env}"
 PROMPT_VERSION="${PROMPT_VERSION:-v1-midterm-election}"
+EVIDENCE_MODE="${EVIDENCE_MODE:-price-only}"
 
 case "$STAGE" in
   prepare|eval|sft|dpo|ppo|all) ;;
@@ -108,7 +109,8 @@ if [[ "$STAGE" == "prepare" || "$STAGE" == "all" ]]; then
       --validation-end "${VALIDATION_END:-2022-11-15T23:59:59Z}" \
       --test-end "${TEST_END:-2026-11-10T23:59:59Z}" \
       --output "$OUTPUT_ROOT" \
-      --regime midterm-election
+      --regime midterm-election \
+      --evidence-mode "$EVIDENCE_MODE"
   fi
 fi
 

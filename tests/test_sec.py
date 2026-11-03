@@ -69,6 +69,31 @@ class SecAdapterTests(unittest.TestCase):
         )
         self.assertEqual(len(before_amendment), 1)
 
+    def test_bounded_filing_text_preserves_cutoff_and_strips_markup(self):
+        text_adapter = SecDataAdapter(
+            "Example University research@example.edu", Mock(),
+            text_request=lambda _url, **_kwargs: (
+                "<html><body><h1>Results</h1><script>secret()</script>"
+                "Revenue increased.</body></html>"
+            ),
+        )
+        filings = text_adapter.normalize_submissions(
+            recent_payload(), cik=320193, symbol="AAPL",
+            as_of="2026-03-01T00:00:00Z", retrieved_at="2026-03-02T00:00:00Z",
+        )
+        excerpt = text_adapter.fetch_filing_text(
+            filings[0], as_of="2026-03-01T00:00:00Z",
+            retrieved_at="2026-03-02T00:00:00Z", max_chars=256,
+        )
+        self.assertEqual(excerpt.source, "sec.filing_text")
+        self.assertIn("Revenue increased.", excerpt.text)
+        self.assertNotIn("secret()", excerpt.text)
+        with self.assertRaisesRegex(ValueError, "not eligible"):
+            text_adapter.fetch_filing_text(
+                filings[1], as_of="2026-01-20T00:00:00Z",
+                retrieved_at="2026-03-02T00:00:00Z",
+            )
+
     def test_date_only_requires_explicit_policy(self):
         adapter = SecDataAdapter("Example research@example.edu", Mock())
         payload = recent_payload(acceptanceDateTime=["", ""])
