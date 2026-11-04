@@ -118,6 +118,18 @@ October 26–30, 2026 week for testing, use `midterm-election-plus-recent` with
 `--recent-end 2026-11-01`. The price end must extend through the next session so the
 test outcomes can be labeled.
 
+If preparation has already completed, evidence prompts can be compacted offline without
+calling Alpaca, SEC, or yfinance again:
+
+```bash
+uv run stock-agent-compact \
+  --input artifacts/mixed-2026-test-v3 \
+  --output artifacts/mixed-2026-test-v3-compact
+```
+
+The command preserves the full evidence archive, rewrites SFT/DPO/PPO policy prompts,
+recomputes the dataset manifest hash, and writes `compaction-manifest.json`.
+
 Use separate output directories for `price-only`, `news`, `sec`, and `news-sec` so their
 dataset and artifact hashes remain comparable and isolated. The existing price-only artifact
 must not be described as the NLP-enabled result. SEC coverage follows the available
