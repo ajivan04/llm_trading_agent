@@ -156,6 +156,7 @@ if [[ "$STAGE" == "sft" || "$STAGE" == "all" ]]; then
       --train "$OUTPUT_ROOT/dataset/train.jsonl" \
       --validation "$OUTPUT_ROOT/dataset/validation.jsonl" \
       --output "$SFT_DIR" --prompt-version "$PROMPT_VERSION" \
+      --max-length "${MAX_LENGTH:-8192}" \
       --max-steps "${SFT_STEPS:-1000}" --save-steps 25 --logging-steps 5 \
       "${resume_args[@]}"
   fi
@@ -175,6 +176,7 @@ if [[ "$STAGE" == "dpo" || "$STAGE" == "all" ]]; then
       --validation "$OUTPUT_ROOT/dpo-validation.jsonl" \
       --adapter-checkpoint "$OUTPUT_ROOT/sft" \
       --output "$DPO_DIR" --prompt-version "$PROMPT_VERSION" \
+      --max-length "${MAX_LENGTH:-8192}" \
       --max-steps "${DPO_STEPS:-500}" --save-steps 25 --logging-steps 5 \
       "${resume_args[@]}"
   fi
@@ -195,6 +197,7 @@ if [[ "$STAGE" == "ppo" || "$STAGE" == "all" ]]; then
       --environment-factory agent.training.environment:create_training_environment \
       --environment-config "$OUTPUT_ROOT/ppo-environment.json" \
       --output "$PPO_DIR" --prompt-version "$PROMPT_VERSION" \
+      --max-length "${MAX_LENGTH:-8192}" \
       --updates "${PPO_UPDATES:-100}" --save-steps 25 \
       "${ppo_args[@]}"
   fi
