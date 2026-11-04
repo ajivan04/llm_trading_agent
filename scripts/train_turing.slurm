@@ -103,7 +103,7 @@ if [[ "$STAGE" == "prepare" || "$STAGE" == "all" ]]; then
     echo "Preparation already complete; skipping."
   else
     run_child uv run stock-agent-prepare \
-      --start "${START_DATE:-2006-11-03}" \
+      --start "${START_DATE:-2016-01-04}" \
       --end "${DATA_END:-2022-11-15}" \
       --train-end "${TRAIN_END:-2018-11-13T23:59:59Z}" \
       --validation-end "${VALIDATION_END:-2022-11-15T23:59:59Z}" \

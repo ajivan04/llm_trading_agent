@@ -96,7 +96,7 @@ def _window_dict(window: ElectionWindow) -> dict[str, object]:
 
 
 def build_midterm_regime_plan(
-    *, target_year: int = 2026, historical_years: Sequence[int] = (2022, 2018, 2014, 2010, 2006),
+    *, target_year: int = 2026, historical_years: Sequence[int] = (2022, 2018),
 ) -> ElectionRegimePlan:
     """Build Monday-through-Sunday event weeks around comparable midterms."""
     def window(year: int) -> ElectionWindow:

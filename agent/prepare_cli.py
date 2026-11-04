@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--target-election-year", type=int, default=2026)
     parser.add_argument("--historical-election-years", type=int, nargs="+",
-                        default=[2022, 2018, 2014, 2010, 2006])
+                        default=[2022, 2018])
     parser.add_argument(
         "--evidence-mode", choices=("price-only", "news", "sec", "news-sec"),
         default="price-only",

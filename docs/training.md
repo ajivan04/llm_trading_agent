@@ -104,7 +104,7 @@ ALPACA_API_KEY="$ALPACA_API_KEY" \
 ALPACA_SECRET_KEY="$ALPACA_SECRET_KEY" \
 SEC_USER_AGENT="$SEC_USER_AGENT" \
 uv run stock-agent-prepare \
-  --start 2006-11-03 --end 2022-11-15 \
+  --start 2016-01-04 --end 2022-11-15 \
   --train-end 2018-11-13T23:59:59Z \
   --validation-end 2022-11-15T23:59:59Z \
   --test-end 2026-11-10T23:59:59Z \
@@ -127,7 +127,7 @@ prediction feature; election-related text is not added to policy prompts automat
 
 ```bash
 uv run stock-agent-prepare \
-  --start 2006-11-03 --end 2026-11-10 \
+  --start 2016-01-04 --end 2026-11-10 \
   --train-end 2018-11-13T23:59:59Z \
   --validation-end 2022-11-15T23:59:59Z \
   --test-end 2026-11-10T23:59:59Z \

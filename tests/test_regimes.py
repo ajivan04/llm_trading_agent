@@ -10,7 +10,7 @@ class ElectionRegimeTests(unittest.TestCase):
         plan = build_midterm_regime_plan()
         self.assertEqual(plan.target.start, date(2026, 11, 2))
         self.assertEqual(plan.target.end, date(2026, 11, 9))
-        self.assertEqual(plan.training_years, (2018, 2014, 2010, 2006))
+        self.assertEqual(plan.training_years, (2018,))
         self.assertEqual(plan.validation_window.year, 2022)
         self.assertNotIn(2026, plan.training_years)
 
