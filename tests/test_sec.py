@@ -124,6 +124,29 @@ class SecAdapterTests(unittest.TestCase):
                 retrieved_at="2026-03-02T00:00:00Z",
             )
 
+    def test_fetch_submissions_loads_historical_submission_files(self):
+        historical = recent_payload(
+            accessionNumber=["0000320193-18-000001", "0000320193-18-000002"],
+            filingDate=["2018-01-02", "2018-02-02"],
+            reportDate=["2017-12-31", "2017-12-31"],
+            acceptanceDateTime=["2018-01-02T21:01:02Z", "2018-02-02T21:01:02Z"],
+            form=["10-K", "10-Q"],
+            primaryDocument=["a.htm", "b.htm"], items=["", ""],
+        )
+        self.request.side_effect = [
+            {"cik": "0000320193", "filings": {
+                "recent": recent_payload(),
+                "files": [{"name": "CIK0000320193-submissions-001.json",
+                           "filingFrom": "2018-01-01", "filingTo": "2018-12-31"}],
+            }},
+            historical,
+        ]
+        evidence = self.adapter.fetch_submissions(
+            320193, symbol="AAPL", as_of="2018-12-31T23:59:59Z",
+            retrieved_at="2019-01-01T00:00:00Z",
+        )
+        self.assertTrue(any(item.accession_id == "0000320193-18-000001" for item in evidence))
+
     def test_companyfacts_preserve_units_periods_and_availability(self):
         availability = {
             "0000320193-26-000010": "2026-04-20T20:00:00Z",

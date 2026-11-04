@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
+import zlib
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,7 +61,13 @@ def _sec_request(url: str, *, headers: dict[str, str]):
     request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed SEC HTTPS endpoints
-            payload = json.loads(response.read().decode("utf-8"))
+            body = response.read()
+            encoding = str(response.headers.get("Content-Encoding", "")).lower()
+            if "gzip" in encoding or body[:2] == b"\x1f\x8b":
+                body = gzip.decompress(body)
+            elif "deflate" in encoding:
+                body = zlib.decompress(body)
+            payload = json.loads(body.decode("utf-8"))
     except Exception as exc:  # pragma: no cover - network dependent
         raise RuntimeError("SEC request failed") from exc
     if not isinstance(payload, dict):
@@ -71,7 +79,13 @@ def _sec_text_request(url: str, *, headers: dict[str, str]) -> str:
     request = Request(url, headers=headers)
     try:
         with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed SEC HTTPS endpoints
-            return response.read().decode("utf-8", errors="replace")
+            body = response.read()
+            encoding = str(response.headers.get("Content-Encoding", "")).lower()
+            if "gzip" in encoding or body[:2] == b"\x1f\x8b":
+                body = gzip.decompress(body)
+            elif "deflate" in encoding:
+                body = zlib.decompress(body)
+            return body.decode("utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover - network dependent
         raise RuntimeError("SEC filing text request failed") from exc
 

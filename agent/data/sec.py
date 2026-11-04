@@ -189,10 +189,33 @@ class SecDataAdapter:
         filings = payload.get("filings")
         if not isinstance(filings, Mapping) or not isinstance(filings.get("recent"), Mapping):
             raise ValueError("SEC submissions payload is missing filings.recent")
-        return self.normalize_submissions(
+        evidence = list(self.normalize_submissions(
             filings["recent"], cik=normalized_cik, symbol=symbol, as_of=as_of,
             retrieved_at=retrieved_at, forms=forms,
-        )
+        ))
+        # The SEC keeps only the recent filings inline. Older periods are listed
+        # in filings.files and must be fetched explicitly for historical replay.
+        files = filings.get("files", ())
+        cutoff = parse_timestamp(as_of).date().isoformat()
+        if isinstance(files, list):
+            for descriptor in files:
+                if not isinstance(descriptor, Mapping):
+                    continue
+                name = descriptor.get("name")
+                filing_from = descriptor.get("filingFrom")
+                if (not isinstance(name, str) or not name.endswith(".json")
+                        or ".." in name or not isinstance(filing_from, str)
+                        or filing_from > cutoff):
+                    continue
+                historical = self._get(f"https://data.sec.gov/submissions/{name}")
+                evidence.extend(self.normalize_submissions(
+                    historical, cik=normalized_cik, symbol=symbol, as_of=as_of,
+                    retrieved_at=retrieved_at, forms=forms,
+                ))
+        unique = {item.id: item for item in evidence}
+        return tuple(sorted(unique.values(), key=lambda item: (
+            item.available_at, item.accession_id or "", item.id,
+        )))
 
     def fetch_filing_text(
         self, filing: Evidence, *, as_of: str | datetime, retrieved_at: str | datetime,
