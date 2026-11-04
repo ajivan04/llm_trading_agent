@@ -361,6 +361,11 @@ class AlpacaNewsAdapter:
                             continue
                         title = unescape(str(raw.get("headline") or "").strip())
                         summary = unescape(str(raw.get("summary") or raw.get("content") or "").strip())
+                        # Alpaca can return metadata-only records. They cannot
+                        # provide NLP evidence, so omit them rather than failing
+                        # the entire historical preparation run.
+                        if not title and not summary:
+                            continue
                         url = canonicalize_url(raw.get("url"))
                         values = {
                             "canonical_url": url,

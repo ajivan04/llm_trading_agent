@@ -210,6 +210,21 @@ class AlpacaNewsTests(unittest.TestCase):
         )
         self.assertEqual(items, ())
 
+    def test_skips_metadata_only_articles(self):
+        adapter = AlpacaNewsAdapter(
+            "key", "secret", lambda _params: {"news": [{
+                "headline": "", "summary": "", "source": "Wire",
+                "created_at": "2026-01-05T14:00:00Z", "url": "https://e.com/empty",
+                "symbols": ["AAPL"],
+            }]},
+        )
+        items = adapter.fetch(
+            ("AAPL",), time_from="2026-01-01T00:00:00Z",
+            time_to="2026-01-06T00:00:00Z", as_of="2026-01-06T00:00:00Z",
+            retrieved_at="2026-01-06T01:00:00Z",
+        )
+        self.assertEqual(items, ())
+
 
 class NewsAggregationTests(unittest.TestCase):
     def test_weighted_aggregate_and_explicit_missing_state(self):
