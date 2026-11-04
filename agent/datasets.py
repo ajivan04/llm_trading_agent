@@ -43,6 +43,11 @@ def policy_evidence(item: Evidence) -> dict[str, Any]:
     ``retrieved_at`` remains audit lineage because a historical record is often
     downloaded long after the decision being replayed.
     """
+    # Keep prompts bounded even when SEC excerpts or provider metadata are
+    # verbose. Full records remain archived in evidence.jsonl and are covered
+    # by evidence_hash; Qwen only needs the decision-time excerpt and core
+    # fields.
+    text = item.text[:1600]
     values: Any = item.values
     if item.source == "derived.price_features":
         # Source IDs/fingerprints are audit lineage, not model inputs. Keeping
@@ -56,22 +61,29 @@ def policy_evidence(item: Evidence) -> dict[str, Any]:
             )
             if key in item.values
         }
+    elif item.source == "sec.filing_text":
+        values = {
+            key: item.values[key]
+            for key in ("form", "base_form", "accession", "excerpt")
+            if key in item.values
+        }
+        if "excerpt" not in values:
+            values["excerpt"] = text
+    elif item.source == "sec.submissions":
+        values = {
+            key: item.values[key]
+            for key in ("form", "base_form", "filing_date", "report_date", "accession")
+            if key in item.values
+        }
     return {
         "id": item.id,
         "source": item.source,
         "symbol": item.symbol,
         "observed_at": item.observed_at,
         "available_at": item.available_at,
-        "text": item.text,
+        "text": text,
         "values": values,
-        "url": item.url,
-        "revision_id": item.revision_id,
         "accession_id": item.accession_id,
-        "vintage_id": item.vintage_id,
-        "units": item.units,
-        "entitlement": item.entitlement,
-        "raw_content_hash": item.raw_content_hash,
-        "transformation_version": item.transformation_version,
     }
 
 
