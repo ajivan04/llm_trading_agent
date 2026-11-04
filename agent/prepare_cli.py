@@ -161,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         news_by_symbol: dict[str, tuple] = defaultdict(tuple)
         sec_by_symbol: dict[str, tuple] = defaultdict(tuple)
         sec_text_cache: dict[str, object] = {}
+        sec_missing_symbols: list[str] = []
         if args.evidence_mode in {"news", "news-sec"}:
             if args.news_provider == "alpaca":
                 api_key = os.environ.get("ALPACA_API_KEY", "")
@@ -194,7 +195,12 @@ def main(argv: list[str] | None = None) -> int:
             for symbol in symbols:
                 cik = ticker_map.get(symbol)
                 if cik is None:
-                    raise ValueError(f"SEC ticker map has no CIK for {symbol}")
+                    # ETFs and some non-issuer instruments do not have a
+                    # company CIK. Keep them in the trading universe with an
+                    # explicit absence of SEC evidence.
+                    sec_missing_symbols.append(symbol)
+                    sec_by_symbol[symbol] = ()
+                    continue
                 filings = sec_adapter.fetch_submissions(
                     cik, symbol=symbol, as_of=cutoff, retrieved_at=retrieved_at,
                 )
@@ -258,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             "submissions-metadata-and-bounded-text"
             if args.evidence_mode in {"sec", "news-sec"} else None
         ),
+        "sec_missing_symbols": tuple(sorted(sec_missing_symbols)),
     }, sort_keys=True))
     return 0
 
