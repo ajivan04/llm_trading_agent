@@ -65,6 +65,32 @@ class CompactionTests(unittest.TestCase):
         messages = compact_messages([{"role": "user", "content": json.dumps(payload)}])
         self.assertEqual(json.loads(messages[0]["content"])["evidence"][0]["id"], "n")
 
+    def test_inline_index_can_be_omitted_from_policy_context(self):
+        item = ev("n", "alpaca.news", "2026-10-30T12:00:00Z", "headline")
+        payload = {"as_of": "2026-10-31T00:00:00Z", "evidence": [item.to_dict()]}
+        messages = compact_messages(
+            [{"role": "user", "content": json.dumps(payload)}],
+            include_evidence_index=False,
+        )
+        self.assertNotIn("evidence_index", json.loads(messages[0]["content"]))
+
+    def test_news_aggregate_drops_unbounded_provenance_arrays(self):
+        item = ev(
+            "aggregate", "derived.news_aggregate", "2026-10-30T12:00:00Z",
+            "aggregate",
+            {
+                "article_count": 352,
+                "weighted_sentiment": 0.2,
+                "source_evidence_ids": [f"id-{i}" for i in range(10000)],
+                "source_evidence_fingerprints": [f"hash-{i}" for i in range(10000)],
+            },
+        )
+        result = compact_evidence([item], as_of="2026-10-31T00:00:00Z")
+        values = result[0]["values"]
+        self.assertEqual(values["source_evidence_count"], 10000)
+        self.assertNotIn("source_evidence_ids", values)
+        self.assertNotIn("source_evidence_fingerprints", values)
+
 
 if __name__ == "__main__":
     unittest.main()

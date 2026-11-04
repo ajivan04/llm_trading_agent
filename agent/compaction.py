@@ -69,6 +69,20 @@ def _compact_item(item: Evidence, *, max_text_chars: int) -> dict[str, Any]:
             ) if key in item.values
         }
         values["excerpt"] = text
+    elif item.source == "derived.news_aggregate":
+        # The aggregate may carry every contributing article ID and
+        # fingerprint. Those are audit metadata, not model context, and can
+        # be tens of thousands of tokens. The full mapping remains available
+        # in the evidence archive/compaction sidecar.
+        values = {
+            key: item.values[key] for key in (
+                "article_count", "missing", "newest_age_hours",
+                "sentiment_disagreement", "weighted_sentiment",
+            ) if key in item.values
+        }
+        ids = item.values.get("source_evidence_ids")
+        if isinstance(ids, (list, tuple)):
+            values["source_evidence_count"] = len(ids)
     else:
         values = dict(item.values)
     return {
