@@ -285,7 +285,12 @@ class SecDataAdapter:
             available = _availability(record, self._availability_resolver)
             if parse_timestamp(available) > cutoff:
                 continue
-            primary = _required_text(record.get("primaryDocument"), "primaryDocument")
+            primary_value = record.get("primaryDocument")
+            if not isinstance(primary_value, str) or not primary_value.strip():
+                # SEC historical archives can contain metadata-only rows. They
+                # cannot yield a filing URL or bounded text excerpt.
+                continue
+            primary = primary_value.strip()
             accession_path = accession.replace("-", "")
             url = (
                 f"https://www.sec.gov/Archives/edgar/data/{int(normalized_cik)}/"

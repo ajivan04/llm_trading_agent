@@ -147,6 +147,15 @@ class SecAdapterTests(unittest.TestCase):
         )
         self.assertTrue(any(item.accession_id == "0000320193-18-000001" for item in evidence))
 
+    def test_metadata_only_submission_without_primary_document_is_skipped(self):
+        payload = recent_payload(primaryDocument=["", "a.htm"])
+        evidence = self.adapter.normalize_submissions(
+            payload, cik=320193, symbol="AAPL", as_of="2026-03-01T00:00:00Z",
+            retrieved_at="2026-03-02T00:00:00Z",
+        )
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0].values["primary_document"], "a.htm")
+
     def test_companyfacts_preserve_units_periods_and_availability(self):
         availability = {
             "0000320193-26-000010": "2026-04-20T20:00:00Z",
