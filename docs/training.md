@@ -130,6 +130,9 @@ uv run stock-agent-compact \
 The command preserves the full evidence archive, rewrites SFT/DPO/PPO policy prompts,
 recomputes the dataset manifest hash, and writes `compaction-manifest.json`.
 
+On Turing, submit the CPU-only equivalent with `scripts/compact_turing.slurm`; it uses the
+existing `.venv` and does not require `uv` or a GPU.
+
 Use separate output directories for `price-only`, `news`, `sec`, and `news-sec` so their
 dataset and artifact hashes remain comparable and isolated. The existing price-only artifact
 must not be described as the NLP-enabled result. SEC coverage follows the available
