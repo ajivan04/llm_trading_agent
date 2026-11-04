@@ -102,6 +102,13 @@ if [[ "$STAGE" == "prepare" || "$STAGE" == "all" ]]; then
   if [[ -f "$OUTPUT_ROOT/preparation-manifest.json" ]]; then
     echo "Preparation already complete; skipping."
   else
+    regime_args=(--regime "${REGIME:-midterm-election}")
+    if [[ -n "${RECENT_START:-}" ]]; then
+      regime_args+=(--recent-start "$RECENT_START")
+    fi
+    if [[ -n "${RECENT_END:-}" ]]; then
+      regime_args+=(--recent-end "$RECENT_END")
+    fi
     run_child uv run stock-agent-prepare \
       --start "${START_DATE:-2016-01-04}" \
       --end "${DATA_END:-2022-11-15}" \
@@ -109,7 +116,7 @@ if [[ "$STAGE" == "prepare" || "$STAGE" == "all" ]]; then
       --validation-end "${VALIDATION_END:-2022-11-15T23:59:59Z}" \
       --test-end "${TEST_END:-2026-11-10T23:59:59Z}" \
       --output "$OUTPUT_ROOT" \
-      --regime midterm-election \
+      "${regime_args[@]}" \
       --evidence-mode "$EVIDENCE_MODE"
   fi
 fi
