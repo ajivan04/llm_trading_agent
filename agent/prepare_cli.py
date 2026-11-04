@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -85,6 +85,31 @@ def _eligible_news(items, *, as_of: str, lookback_days: int):
     )
 
 
+def _news_windows(args, allowed_sessions: tuple[str, ...]):
+    """Return minimal historical windows needed by the policy lookbacks."""
+    if not allowed_sessions:
+        return ((args.start, args.end),)
+    lower = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+    upper = datetime.fromisoformat(args.end).replace(tzinfo=UTC)
+    windows = []
+    for session in allowed_sessions:
+        session_at = datetime.fromisoformat(session).replace(tzinfo=UTC)
+        if session_at < lower or session_at >= upper:
+            continue
+        start = max(lower, session_at - timedelta(days=args.news_lookback_days))
+        end = min(upper, session_at + timedelta(days=1))
+        if start < end:
+            windows.append((start, end))
+    windows.sort()
+    merged = []
+    for start, end in windows:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return tuple((start.isoformat(), end.isoformat()) for start, end in merged)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (args.news_lookback_days <= 0 or args.sec_lookback_days <= 0
@@ -133,16 +158,16 @@ def main(argv: list[str] | None = None) -> int:
             # Fetch the complete historical range once; the per-snapshot provider
             # below applies the lookback relative to each decision cutoff. A final-
             # window fetch would silently omit 2006/2010/2014/2018 event weeks.
-            news_start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
-            fetched_news = news_adapter.fetch(
-                symbols, time_from=news_start, time_to=cutoff,
-                as_of=cutoff, retrieved_at=retrieved_at, limit=args.news_limit,
-            )
-            grouped_news: dict[str, list] = defaultdict(list)
-            for item in fetched_news:
-                grouped_news[item.symbol].append(item)
+            grouped_news: dict[str, dict[str, object]] = defaultdict(dict)
+            for window_start, window_end in _news_windows(args, allowed_sessions):
+                fetched_news = news_adapter.fetch(
+                    symbols, time_from=window_start, time_to=window_end,
+                    as_of=cutoff, retrieved_at=retrieved_at, limit=args.news_limit,
+                )
+                for item in fetched_news:
+                    grouped_news[item.symbol][item.id] = item
             for symbol in symbols:
-                news_by_symbol[symbol] = tuple(grouped_news[symbol])
+                news_by_symbol[symbol] = tuple(grouped_news[symbol].values())
         if args.evidence_mode in {"sec", "news-sec"}:
             user_agent = os.environ.get("SEC_USER_AGENT", "")
             if not user_agent:
