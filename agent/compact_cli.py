@@ -11,7 +11,10 @@ from agent.compaction import COMPACTION_VERSION, CompactionConfig, compact_evide
 from agent.contracts import Evidence, canonical_json, content_hash
 
 
-def compact_messages(messages: Any, *, config: CompactionConfig = CompactionConfig()) -> Any:
+def compact_messages(
+    messages: Any, *, config: CompactionConfig = CompactionConfig(),
+    include_evidence_index: bool = True,
+) -> Any:
     if not isinstance(messages, list):
         return messages
     output = []
@@ -42,19 +45,27 @@ def compact_messages(messages: Any, *, config: CompactionConfig = CompactionConf
                     evidence, as_of=as_of, config=config,
                 ))
                 payload["evidence"] = compacted
-                payload["evidence_index"] = [
-                    {
-                        "id": item.id, "source": item.source, "symbol": item.symbol,
-                        "available_at": item.available_at,
-                    }
-                    for item in evidence
-                ]
+                # The complete index is audit metadata, not model evidence. The
+                # CLI writes it to a sidecar so it cannot consume the context
+                # window. Keep the option for callers/tests that need inline
+                # provenance.
+                if include_evidence_index:
+                    payload["evidence_index"] = [
+                        {
+                            "id": item.id, "source": item.source, "symbol": item.symbol,
+                            "available_at": item.available_at,
+                        }
+                        for item in evidence
+                    ]
                 item["content"] = canonical_json(payload)
         output.append(item)
     return output
 
 
-def compact_prompt(prompt: Any, *, config: CompactionConfig = CompactionConfig()) -> Any:
+def compact_prompt(
+    prompt: Any, *, config: CompactionConfig = CompactionConfig(),
+    include_evidence_index: bool = True,
+) -> Any:
     if not isinstance(prompt, str):
         return prompt
     try:
@@ -62,7 +73,9 @@ def compact_prompt(prompt: Any, *, config: CompactionConfig = CompactionConfig()
     except json.JSONDecodeError:
         return prompt
     if isinstance(messages, list):
-        return canonical_json(compact_messages(messages, config=config))
+        return canonical_json(compact_messages(
+            messages, config=config, include_evidence_index=include_evidence_index,
+        ))
     return prompt
 
 
@@ -79,8 +92,30 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def _compact_dataset(root: Path, *, config: CompactionConfig) -> str:
     dataset = root / "dataset"
     examples = _read_jsonl(dataset / "examples.jsonl")
+    audit_index: list[dict[str, Any]] = []
     for row in examples:
-        row["messages"] = compact_messages(row.get("messages", []), config=config)
+        before = row.get("messages", [])
+        for message_index, message in enumerate(before if isinstance(before, list) else []):
+            if message.get("role") != "user" or not isinstance(message.get("content"), str):
+                continue
+            try:
+                payload = json.loads(message["content"])
+            except json.JSONDecodeError:
+                continue
+            entries = payload.get("evidence") if isinstance(payload, dict) else None
+            if isinstance(entries, list):
+                audit_index.append({
+                    "example_id": row.get("example_id"),
+                    "message_index": message_index,
+                    "evidence": [
+                        {"id": item.get("id"), "source": item.get("source"),
+                         "symbol": item.get("symbol"), "available_at": item.get("available_at")}
+                        for item in entries if isinstance(item, dict)
+                    ],
+                })
+        row["messages"] = compact_messages(
+            before, config=config, include_evidence_index=False,
+        )
     _write_jsonl(dataset / "examples.jsonl", examples)
     for split in ("train", "validation", "test"):
         _write_jsonl(dataset / f"{split}.jsonl", [
@@ -99,6 +134,9 @@ def _compact_dataset(root: Path, *, config: CompactionConfig) -> str:
             identity[key] = manifest[key]
     manifest["dataset_hash"] = content_hash(identity)
     (dataset / "manifest.json").write_text(canonical_json(manifest), encoding="utf-8")
+    (root / "compaction-evidence-index.jsonl").write_text(
+        "".join(canonical_json(item) + "\n" for item in audit_index), encoding="utf-8"
+    )
     return manifest["dataset_hash"]
 
 
@@ -123,11 +161,15 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             pair = row.get("pair")
             if isinstance(pair, dict) and "prompt" in pair:
-                pair["prompt"] = compact_prompt(pair["prompt"], config=config)
+                pair["prompt"] = compact_prompt(
+                    pair["prompt"], config=config, include_evidence_index=False,
+                )
         _write_jsonl(args.output / name, rows)
     ppo = _read_jsonl(args.output / "ppo-train.jsonl")
     for row in ppo:
-        row["messages"] = compact_messages(row.get("messages", []), config=config)
+        row["messages"] = compact_messages(
+            row.get("messages", []), config=config, include_evidence_index=False,
+        )
     _write_jsonl(args.output / "ppo-train.jsonl", ppo)
     environment_path = args.output / "ppo-environment.json"
     if environment_path.exists():
