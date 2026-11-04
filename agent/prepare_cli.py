@@ -134,11 +134,15 @@ def main(argv: list[str] | None = None) -> int:
             # below applies the lookback relative to each decision cutoff. A final-
             # window fetch would silently omit 2006/2010/2014/2018 event weeks.
             news_start = datetime.fromisoformat(args.start).replace(tzinfo=UTC)
+            fetched_news = news_adapter.fetch(
+                symbols, time_from=news_start, time_to=cutoff,
+                as_of=cutoff, retrieved_at=retrieved_at, limit=args.news_limit,
+            )
+            grouped_news: dict[str, list] = defaultdict(list)
+            for item in fetched_news:
+                grouped_news[item.symbol].append(item)
             for symbol in symbols:
-                news_by_symbol[symbol] = news_adapter.fetch(
-                    (symbol,), time_from=news_start, time_to=cutoff,
-                    as_of=cutoff, retrieved_at=retrieved_at, limit=args.news_limit,
-                )
+                news_by_symbol[symbol] = tuple(grouped_news[symbol])
         if args.evidence_mode in {"sec", "news-sec"}:
             user_agent = os.environ.get("SEC_USER_AGENT", "")
             if not user_agent:

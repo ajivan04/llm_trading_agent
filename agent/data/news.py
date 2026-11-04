@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from html import unescape
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.error import HTTPError
 from urllib.request import Request as UrlRequest, urlopen
 
 from agent.contracts import Evidence, content_hash, normalize_timestamp, parse_timestamp
@@ -289,11 +291,22 @@ class AlpacaNewsAdapter:
                 "APCA-API-SECRET-KEY": secret_key,
             },
         )
-        try:
-            with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS endpoint
-                payload = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:  # pragma: no cover - network dependent
-            raise RuntimeError("Alpaca news request failed") from exc
+        for attempt in range(5):
+            try:
+                with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS endpoint
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as exc:  # pragma: no cover - network dependent
+                if exc.code != 429 or attempt == 4:
+                    raise RuntimeError("Alpaca news request failed") from exc
+                retry_after = exc.headers.get("Retry-After", "")
+                try:
+                    delay = min(60.0, max(1.0, float(retry_after)))
+                except (TypeError, ValueError):
+                    delay = float(2 ** attempt)
+                time.sleep(delay)
+            except Exception as exc:  # pragma: no cover - network dependent
+                raise RuntimeError("Alpaca news request failed") from exc
         if not isinstance(payload, Mapping):
             raise RuntimeError("Alpaca returned an invalid news response")
         return payload
