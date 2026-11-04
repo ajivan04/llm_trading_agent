@@ -113,6 +113,11 @@ uv run stock-agent-prepare \
   --evidence-mode news-sec
 ```
 
+For a mixed-regime artifact that includes ordinary 2026 sessions while reserving the
+October 26–30, 2026 week for testing, use `midterm-election-plus-recent` with
+`--recent-end 2026-11-01`. The price end must extend through the next session so the
+test outcomes can be labeled.
+
 Use separate output directories for `price-only`, `news`, `sec`, and `news-sec` so their
 dataset and artifact hashes remain comparable and isolated. The existing price-only artifact
 must not be described as the NLP-enabled result. SEC coverage follows the available

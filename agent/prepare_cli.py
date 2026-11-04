@@ -36,9 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-bps", type=float, default=5.0)
     parser.add_argument("--trade-qty", type=int, default=5)
     parser.add_argument(
-        "--regime", choices=("none", "midterm-election"), default="none",
+        "--regime", choices=("none", "midterm-election", "midterm-election-plus-recent"), default="none",
         help="restrict decision sessions to the declared event-regime windows",
     )
+    parser.add_argument("--recent-start", default=None,
+                        help="inclusive YYYY-MM-DD start for the recent mixed-regime window")
+    parser.add_argument("--recent-end", default=None,
+                        help="exclusive YYYY-MM-DD end for the recent mixed-regime window")
     parser.add_argument("--target-election-year", type=int, default=2026)
     parser.add_argument("--historical-election-years", type=int, nargs="+",
                         default=[2022, 2018])
@@ -148,12 +152,26 @@ def main(argv: list[str] | None = None) -> int:
     }
     regime_plan = None
     allowed_sessions = ()
-    if args.regime == "midterm-election":
+    if args.regime in {"midterm-election", "midterm-election-plus-recent"}:
         regime_plan = build_midterm_regime_plan(
             target_year=args.target_election_year,
             historical_years=tuple(args.historical_election_years),
         )
         allowed_sessions = regime_plan.decision_sessions()
+        if args.regime == "midterm-election-plus-recent":
+            recent_start = args.recent_start or args.start
+            recent_end = args.recent_end or args.end
+            recent_start_at = datetime.fromisoformat(recent_start).date()
+            recent_end_at = datetime.fromisoformat(recent_end).date()
+            if recent_start_at >= recent_end_at:
+                raise ValueError("recent-start must precede recent-end")
+            # All symbols share the XNYS session calendar; use the first
+            # downloaded symbol to add ordinary recent sessions.
+            recent_sessions = {
+                bar.session for bar in bars[symbols[0]]
+                if recent_start_at <= datetime.fromisoformat(bar.session).date() < recent_end_at
+            }
+            allowed_sessions = tuple(sorted(set(allowed_sessions) | recent_sessions))
 
     evidence_provider = None
     if args.evidence_mode != "price-only":
