@@ -5,12 +5,13 @@ import argparse
 import hashlib
 import importlib
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from agent.contracts import content_hash
 
-from .core import MODEL_REVISION, DPOPair, EpisodeExample
+from .core import MODEL_REVISION, DPOCandidate, DPOPair, EpisodeExample
 from .execution import (
     TrainerSettings,
     smoke_test_adapter,
@@ -140,6 +141,35 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
     }
     if audit_hash not in valid_hashes:
         raise ValueError("DPO audit_hash does not match the recorded outcomes")
+    # The audit covers candidate outcomes, not the separately serialized pair.
+    # Rebuild it so a changed prompt/response/split cannot retain a valid old hash.
+    from agent.preferences import CandidateOutcome, build_audited_dpo_pair
+    outcomes = []
+    for payload in (chosen, rejected):
+        item = dict(payload)
+        item["candidate"] = DPOCandidate(**item["candidate"])
+        outcomes.append(CandidateOutcome(**item))
+    expected = build_audited_dpo_pair(*outcomes).pair
+    recorded = {key: value for key, value in pair_row.items() if key != "audit_hash"}
+    expected_fields = {key: value for key, value in asdict(expected).items()
+                       if key != "audit_hash"}
+    if recorded != expected_fields or expected.split != expected_split:
+        raise ValueError("DPO pair does not match its audited candidates and split")
+    if pair_row.get("audit_hash") not in (None, audit_hash):
+        raise ValueError("DPO pair audit_hash differs from the outcome audit")
+    # Prepared DPO prompts must preserve native chat data and supported citations.
+    from agent.policy import parse_decisions
+    from agent.policy.evidence import visible_evidence
+    try:
+        messages = json.loads(expected.prompt)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("DPO prompt must encode native chat messages") from exc
+    visible = visible_evidence(messages)
+    symbols = {item["symbol"] for item in visible.values() if item.get("symbol")}
+    if not visible or not symbols:
+        raise ValueError("DPO prompt requires visible symbol evidence")
+    for response in (expected.chosen, expected.rejected):
+        parse_decisions(response, allowed_symbols=symbols, allowed_evidence_ids=visible)
     pair_payload = dict(pair_row)
     pair_payload["split"] = expected_split
     pair_payload["audit_hash"] = audit_hash
@@ -265,10 +295,12 @@ def main(argv: list[str] | None = None) -> int:
             max_new_tokens=args.max_new_tokens, temperature=args.temperature,
             top_p=args.top_p, epochs_per_rollout=args.ppo_epochs,
         )
+        # Parse every replay row and verify visibility before allocating Qwen.
+        environment = _environment(args.environment_factory, args.environment_config)
         optimizer = QwenPPOOptimizer.from_pretrained(
             settings=settings, ppo=ppo_settings)
         result = train_ppo(
-            _environment(args.environment_factory, args.environment_config), optimizer,
+            environment, optimizer,
             settings=settings, updates=args.updates,
             package_versions=resolve_training_stack("ppo")["versions"],
         )
@@ -286,6 +318,14 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("SFT requires --validation")
         dataset_hash = _verify_sft_manifest(
             args.train, args.validation, train_rows, validation_rows)
+        from .validation import validate_sft_targets
+        validate_sft_targets([
+            _episode_example(row) for row in (*train_rows, *validation_rows)
+        ])
+        from agent.datasets import load_dataset_artifact
+        verified = load_dataset_artifact(args.train.parent)
+        if verified.manifest.dataset_hash != dataset_hash:
+            raise ValueError("SFT artifact identity changed during preflight")
         data_hashes = tuple(dict.fromkeys((dataset_hash, *data_hashes)))
     settings = _settings(args, data_hashes)
     if args.method == "sft":

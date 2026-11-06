@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -298,31 +299,38 @@ class ExecutionTests(unittest.TestCase):
                     train_rows, validation_rows)
 
     def test_cli_requires_recomputable_dpo_audit(self):
-        pair = {
-            "prompt": "prompt", "chosen": "buy", "rejected": "hold",
-            "state_hash": "state", "preference_margin": 0.1,
-            "chosen_id": "buy", "rejected_id": "hold", "split": "train",
-            "audit_hash": None,
-        }
-        chosen = {
-            "reset_id": "reset-buy", "simulator_hash": "sim",
-            "horizon_end": "2026-01-05T00:00:00+00:00", "candidate": {"id": "buy"},
-        }
-        rejected = {
-            "reset_id": "reset-hold", "simulator_hash": "sim",
-            "horizon_end": "2026-01-05T00:00:00+00:00", "candidate": {"id": "hold"},
-        }
-        identity = {
-            "state_hash": "state", "simulator_hash": "sim",
-            "horizon_end": "2026-01-05T00:00:00+00:00",
-            "outcomes": (chosen, rejected),
-        }
-        audit_hash = content_hash(identity)
-        row = {"pair": pair, "audit_hash": audit_hash,
-               "chosen_outcome": chosen, "rejected_outcome": rejected}
+        from agent.contracts import canonical_json
+        from agent.preferences import CandidateOutcome, build_audited_dpo_pair
+        from agent.training import DPOCandidate
+        prompt = canonical_json([{"role": "user", "content": canonical_json({
+            "as_of": "2026-01-05T00:00:00Z", "evidence": [{
+                "id": "price", "source": "test", "symbol": "AAPL", "text": "price",
+                "observed_at": "2026-01-04T00:00:00Z",
+                "available_at": "2026-01-04T00:00:00Z",
+            }],
+        })}])
+        def response(action, qty):
+            return canonical_json({"decisions": [{
+                "symbol": "AAPL", "action": action, "qty": qty,
+                "reason": "test", "evidence_ids": ["price"],
+            }]})
+        chosen = CandidateOutcome(
+            DPOCandidate("buy", "train", prompt, response("buy", 1), "s", "a", "e", 0.1),
+            "reset-buy", "sim", "2026-01-06T00:00:00Z", 0.1, 0,
+        )
+        rejected = replace(chosen, candidate=replace(
+            chosen.candidate, candidate_id="hold", response=response("hold", 0), objective=0,
+        ), reset_id="reset-hold", net_return=0)
+        row = asdict(build_audited_dpo_pair(chosen, rejected))
+        audit_hash = row["audit_hash"]
         self.assertEqual(_audited_dpo_pair(row, "train").audit_hash, audit_hash)
         with self.assertRaisesRegex(ValueError, "audit_hash"):
             _audited_dpo_pair({**row, "audit_hash": "forged"}, "train")
+        tampered = {**row, "pair": {**row["pair"], "chosen": response("sell", 1)}}
+        with self.assertRaisesRegex(ValueError, "audited candidates"):
+            _audited_dpo_pair(tampered, "train")
+        with self.assertRaisesRegex(ValueError, "audited candidates"):
+            _audited_dpo_pair(row, "validation")
 
     def test_ppo_reference_loads_the_same_sft_adapter_frozen(self):
         calls = []

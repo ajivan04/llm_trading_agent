@@ -1,8 +1,10 @@
 import json
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 
+from agent.contracts import canonical_json
 from agent.training import HistoricalPPOEnvironment, ReplayEpisode, create_training_environment
 
 
@@ -15,6 +17,13 @@ def replay_episode(**changes):
         outcome_close=110.0, starting_cash=1000.0,
     )
     values.update(changes)
+    if "messages" not in changes:
+        values["messages"] = ({"role": "user", "content": json.dumps({
+            "as_of": values["decision_at"], "evidence": [{
+                "id": "e1", "source": "test", "symbol": "AAPL", "text": "state",
+                "observed_at": values["decision_at"], "available_at": values["decision_at"],
+            }],
+        })},)
     return ReplayEpisode(**values)
 
 
@@ -52,17 +61,14 @@ class HistoricalPPOEnvironmentTests(unittest.TestCase):
     def test_cli_factory_loads_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ppo.jsonl"
-            row = {
-                "episode_id": "train-1", "split": "train",
-                "decision_at": "2026-01-02T21:00:00Z",
-                "outcome_at": "2026-01-03T21:00:00Z",
-                "messages": [{"role": "user", "content": "state"}],
-                "evidence_ids": ["e1"], "symbol": "AAPL", "next_open": 100,
-                "outcome_close": 101, "starting_cash": 1000,
-            }
+            row = json.loads(canonical_json(asdict(replay_episode())))
             path.write_text(json.dumps(row) + "\n")
             result = create_training_environment({"episodes_path": str(path)})
             self.assertEqual(result.episodes[0].episode_id, "train-1")
+
+    def test_rejects_archive_only_ppo_allowlist_before_inference(self):
+        with self.assertRaisesRegex(ValueError, "exactly match visible"):
+            replay_episode(evidence_ids=("e1", "archive-only"))
 
     def test_requires_chronology_but_allows_independent_overlapping_horizons(self):
         later = replay_episode(

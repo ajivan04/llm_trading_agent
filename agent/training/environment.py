@@ -98,10 +98,16 @@ class ReplayEpisode:
             raise ValueError("evidence_ids must be nonempty")
         if len(evidence_ids) != len(set(evidence_ids)):
             raise ValueError("evidence_ids must be unique")
+        from agent.policy.evidence import visible_evidence
+        visible = visible_evidence(self.messages, expected_as_of=decision_at)
+        if set(evidence_ids) != set(visible):
+            raise ValueError("PPO evidence allowlist must exactly match visible prompt records")
         object.__setattr__(self, "evidence_ids", evidence_ids)
         symbol = self.symbol.strip().upper()
         if not symbol:
             raise ValueError("symbol must be nonempty")
+        if symbol not in {item.get("symbol") for item in visible.values()}:
+            raise ValueError("PPO symbol must be supported by visible prompt evidence")
         object.__setattr__(self, "symbol", symbol)
         for name in ("next_open", "outcome_close", "starting_cash"):
             object.__setattr__(self, name, _positive(getattr(self, name), name))
