@@ -183,24 +183,12 @@ if [[ "$STAGE" == "dpo" || "$STAGE" == "all" ]]; then
 fi
 
 if [[ "$STAGE" == "ppo" || "$STAGE" == "all" ]]; then
-  PPO_DIR="$OUTPUT_ROOT/ppo"
-  mkdir -p "$PPO_DIR"
-  if [[ -f "$PPO_DIR/training_manifest.json" ]]; then
-    echo "PPO already complete; skipping."
-  else
-    resume="$(latest_checkpoint "$PPO_DIR")"
-    ppo_args=(--adapter-checkpoint "$OUTPUT_ROOT/sft")
-    if [[ -n "$resume" ]]; then
-      ppo_args=(--resume-from-checkpoint "$resume")
-    fi
-    run_child uv run stock-agent-train ppo \
-      --environment-factory agent.training.environment:create_training_environment \
-      --environment-config "$OUTPUT_ROOT/ppo-environment.json" \
-      --output "$PPO_DIR" --prompt-version "$PROMPT_VERSION" \
-      --max-length "${MAX_LENGTH:-8192}" \
-      --updates "${PPO_UPDATES:-100}" --save-steps 25 \
-      "${ppo_args[@]}"
-  fi
+  # Isolate corrected PPO from legacy completion markers and optimizer states.
+  # Resume is explicit: choose a checksum-valid root state or periodic snapshot.
+  export PREPARED_ROOT="$OUTPUT_ROOT"
+  export SFT_ADAPTER="${SFT_ADAPTER:-$OUTPUT_ROOT/sft}"
+  export PPO_OUTPUT_ROOT="${PPO_OUTPUT_ROOT:-$OUTPUT_ROOT/ppo-v2}"
+  run_child bash "$PROJECT_ROOT/scripts/ppo_turing.slurm"
 fi
 
 echo "Training stage '$STAGE' completed. Artifacts: $OUTPUT_ROOT"

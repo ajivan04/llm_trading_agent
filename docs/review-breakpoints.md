@@ -9,7 +9,7 @@ breakpoint changes remain separate for review before committing.
 | Breakpoint | Scope | Acceptance / review evidence |
 | --- | --- | --- |
 | 1 — evidence/data contract | Exact visible citations, short references, safe artifact repair, CPU preflight, diagnostic scoring/accounting | Reviewed and committed; details below |
-| 2 — corrected PPO | KL loss/gradients, behavior probabilities, dropout, value seeding, action-only statistics, bounded rollout batches and stop conditions | Implementation started; numerical tests plus short real-model collect/update/save/reload smoke; no full run before that |
+| 2 — corrected PPO | KL loss/gradients, behavior probabilities, dropout, value seeding, action-only statistics, bounded rollout batches and stop conditions | Implemented; actual tiny Qwen/PEFT tests pass; full-size A30 smoke pending; see [PPO review](ppo-breakpoint.md) |
 | 3 — assignment research/training | Required callable tools, actual news/SEC text, bounded context, GOOD/BAD trajectory recorder, SFT data masks | Provider/cutoff/quota tests; captured tool trajectory; auditable GOOD counts; one bounded SFT run after preflight |
 | 4 — paper runner/RAG | Alpaca paper-only execution, outbox/reconciliation, pending exposure, BM25 and delayed LLM reflections | Failure/restart/partial-fill tests; ten iterations; broker-confirmed order/status when market permits |
 | 5 — release/freeze | Stateful base/SFT/PPO comparison, small-to-large validation, daily evidence exports and release manifest | One selected adapter/loop, measured latency/validity/P&L, hashes and final held-out protocol |
@@ -128,10 +128,8 @@ notebook's GOOD/BAD trajectory dataset. New news inputs, token-aware budgeting a
 PPO corrections still need their breakpoints. Existing models are intentionally
 absent from the new directory; their original paths remain intact.
 
-## Next review: breakpoint 2
+## Breakpoint 2 handoff
 
-Implement corrected PPO objectives and probability accounting, reduce memory
-allocations without silently discarding context, and test collect/update/restore.
-Record pilot budget, starting/reference SFT identity, sampled decisions/update,
-early stops and validation milestones. Run the short GPU smoke only after review;
-do not resume the previous defective PPO optimizer state.
+See [ppo-breakpoint.md](ppo-breakpoint.md) for changes, tests, limitations and
+two-update / ten-update / total-100 Turing commands. Production training remains
+unrun. Next implementation review is breakpoint 3: tools, news and trajectory SFT.
