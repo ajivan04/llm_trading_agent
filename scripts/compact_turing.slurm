@@ -40,11 +40,20 @@ echo "Job: ${SLURM_JOB_ID:-local}"
 echo "Input: $INPUT_ROOT"
 echo "Output: $OUTPUT_ROOT"
 
+alias_args=()
+case "${SHORT_EVIDENCE_IDS:-0}" in
+  1) alias_args=(--short-evidence-ids) ;;
+  0) ;;
+  *) echo "SHORT_EVIDENCE_IDS must be 0 or 1" >&2; exit 2 ;;
+esac
+
 "$PROJECT_ROOT/.venv/bin/python" -m agent.compact_cli \
   --input "$INPUT_ROOT" \
   --output "$OUTPUT_ROOT" \
   --max-news "${MAX_NEWS:-8}" \
   --max-filings "${MAX_FILINGS:-3}" \
-  --max-text-chars "${MAX_TEXT_CHARS:-1200}"
+  --max-text-chars "${MAX_TEXT_CHARS:-1200}" \
+  "${alias_args[@]}"
 
 echo "Offline compaction completed."
+echo "Only prepared data was exported; existing adapters/evaluations remain in the source."
