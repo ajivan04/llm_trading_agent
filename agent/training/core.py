@@ -354,6 +354,7 @@ class PPORollout:
     policy_version: str
     generated_at: str | datetime
     transitions: tuple[PPOTransition, ...]
+    episode_count: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "rollout_id", _required(self.rollout_id, "rollout_id"))
@@ -361,13 +362,18 @@ class PPORollout:
         object.__setattr__(self, "generated_at", normalize_timestamp(self.generated_at))
         if not self.transitions:
             raise ValueError("rollout must contain transitions")
-        for index, transition in enumerate(self.transitions):
+        if type(self.episode_count) is not int or self.episode_count <= 0:
+            raise ValueError("rollout episode_count must be positive")
+        for transition in self.transitions:
             if transition.rollout_id != self.rollout_id:
                 raise ValueError("transition rollout_id mismatch")
             if transition.policy_version != self.policy_version:
                 raise ValueError("transition policy_version mismatch")
-            if (transition.done or transition.truncated) and index != len(self.transitions) - 1:
-                raise ValueError("episode boundary must end the rollout")
+        observed_episodes = 1 + sum(
+            bool(item.done or item.truncated) for item in self.transitions[:-1]
+        )
+        if observed_episodes != self.episode_count:
+            raise ValueError("rollout episode_count does not match explicit episode boundaries")
 
 
 def validate_fresh_rollout(
@@ -409,6 +415,7 @@ def ppo_objective(
     old_values: Sequence[float], new_values: Sequence[float],
     returns: Sequence[float], entropies: Sequence[float],
     reference_logprobs: Sequence[float] | None = None,
+    reference_kls: Sequence[float] | None = None,
     clip_ratio: float = 0.2, value_clip: float = 0.2,
     value_coefficient: float = 0.5, entropy_coefficient: float = 0.01,
     kl_coefficient: float = 0.0,
@@ -419,6 +426,17 @@ def ppo_objective(
         raise ValueError("PPO objective arrays must be nonempty and aligned")
     if reference_logprobs is not None and len(reference_logprobs) != len(old_logprobs):
         raise ValueError("reference_logprobs must align")
+    if reference_kls is not None and len(reference_kls) != len(old_logprobs):
+        raise ValueError("reference_kls must align")
+    if reference_kls is not None and any(
+        not math.isfinite(float(value)) or float(value) < 0 for value in reference_kls
+    ):
+        raise ValueError("exact reference KL values must be finite and nonnegative")
+    kl_coefficient = _finite(kl_coefficient, "kl_coefficient")
+    if kl_coefficient < 0:
+        raise ValueError("kl_coefficient must be nonnegative")
+    if kl_coefficient and reference_kls is None:
+        raise ValueError("KL loss requires exact categorical reference_kls, not sampled log ratios")
     indices = [index for index, selected in enumerate(action_mask) if selected == 1]
     if any(selected not in (0, 1) for selected in action_mask) or not indices:
         raise ValueError("action_mask must be binary with selected tokens")
@@ -455,9 +473,13 @@ def ppo_objective(
     policy_loss = -sum(surrogates) / len(surrogates)
     value_loss = sum(value_losses) / len(value_losses)
     entropy = sum(float(entropies[index]) for index in indices) / len(indices)
-    reference_kl = 0.0
+    reference_kl = (
+        sum(float(reference_kls[index]) for index in indices) / len(indices)
+        if reference_kls is not None else 0.0
+    )
+    sampled_reference_log_ratio = 0.0
     if reference_logprobs is not None:
-        reference_kl = sum(
+        sampled_reference_log_ratio = sum(
             float(new_logprobs[index]) - float(reference_logprobs[index])
             for index in indices
         ) / len(indices)
@@ -470,6 +492,7 @@ def ppo_objective(
         "entropy": entropy,
         "approx_kl": sum(approx_kls) / len(approx_kls),
         "reference_kl": reference_kl,
+        "sampled_reference_log_ratio": sampled_reference_log_ratio,
         "clip_fraction": sum(clipped_flags) / len(clipped_flags),
     })
 

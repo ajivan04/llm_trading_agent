@@ -385,7 +385,7 @@ class PPOExecutionTests(unittest.TestCase):
             )
             result = train_ppo(
                 object(), optimizer, settings=settings, updates=2,
-                package_versions={"trl": "x"}, clock=iter([1.0, 2.5]).__next__,
+                package_versions={"trl": "x"}, clock=lambda: 1.0,
             )
             self.assertEqual(result.method, "ppo")
             self.assertEqual(len({item[0] for item in optimizer.collected}), 2)
@@ -511,7 +511,7 @@ class TinyState:
 
 
 class TinyQwenPPO(QwenPPOOptimizer):
-    def _statistics(self, model, token_ids, attention_mask, *, with_values):
+    def _statistics(self, model, token_ids, attention_mask, *, with_values, action_start=1):
         width = token_ids.shape[-1]
         values = TinyTensor([[0.1] * width]) if with_values else None
         return TinyTensor([[-0.5] * width]), values, TinyTensor([[0.2] * width])

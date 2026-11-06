@@ -155,6 +155,28 @@ class PPOTests(unittest.TestCase):
         self.assertAlmostEqual(advantages[0], .725)
         self.assertAlmostEqual(returns[0], 1.225)
 
+    def test_multi_episode_rollouts_declare_boundaries_and_isolate_gae(self):
+        first = transition(value=0.5, reward=1, next_value=0, done=True)
+        second = transition(value=0, reward=100, next_value=0, done=True)
+        with self.assertRaisesRegex(ValueError, "episode_count"):
+            PPORollout("rollout-1", "policy-1", "2026-01-01T00:00:00Z", (first, second))
+        batch = PPORollout("rollout-1", "policy-1", "2026-01-01T00:00:00Z",
+                           (first, second), episode_count=2)
+        advantages, returns = compute_gae(batch.transitions)
+        self.assertEqual(advantages[0], 0.5)
+        self.assertEqual(returns[0], 1)
+        self.assertEqual(returns[1], 100)
+
+    def test_sampled_log_ratio_is_not_accepted_as_kl_loss(self):
+        kwargs = dict(old_logprobs=(-1.,), new_logprobs=(-2.,), advantages=(1.,),
+                      action_mask=(1,), old_values=(0.,), new_values=(0.,),
+                      returns=(0.,), entropies=(0.,), reference_logprobs=(-1.,))
+        with self.assertRaisesRegex(ValueError, "exact categorical"):
+            ppo_objective(**kwargs, kl_coefficient=0.1)
+        result = ppo_objective(**kwargs, reference_kls=(0.2,), kl_coefficient=0.1)
+        self.assertEqual(result["reference_kl"], 0.2)
+        self.assertEqual(result["sampled_reference_log_ratio"], -1)
+
     def test_clipped_objective_reports_diagnostics(self):
         result = ppo_objective(
             old_logprobs=(-1.0, -1.0), new_logprobs=(-1.0, math.log(2) - 1),
