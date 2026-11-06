@@ -9,18 +9,20 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from agent.contracts import content_hash
+from agent.contracts import canonical_json, content_hash
 
-from .core import MODEL_REVISION, DPOCandidate, DPOPair, EpisodeExample
+from .core import MODEL_NAME, MODEL_REVISION, DPOCandidate, DPOPair, EpisodeExample
 from .execution import (
+    PPOTrainingLimits,
     TrainerSettings,
+    _path_hash,
     smoke_test_adapter,
     train_dpo,
     train_ppo,
     train_sft,
 )
 from .integrations import resolve_training_stack
-from .qwen_ppo import QwenPPOOptimizer, QwenPPOSettings
+from .qwen_ppo import PPO_IMPLEMENTATION_VERSION, QwenPPOOptimizer, QwenPPOSettings
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -234,14 +236,27 @@ def build_parser() -> argparse.ArgumentParser:
     dpo.add_argument("--beta", type=float, default=0.1)
     ppo = commands.add_parser("ppo", help="Train with fresh simulator rollouts")
     _add_common(ppo, datasets=False)
+    ppo.set_defaults(learning_rate=1e-5, save_steps=10, logging_steps=1)
     ppo.add_argument("--environment-factory", required=True, metavar="MODULE:CALLABLE")
     ppo.add_argument("--environment-config", type=Path)
-    ppo.add_argument("--updates", type=int, required=True)
+    ppo.add_argument("--updates", type=int, required=True,
+                     help="total update target, including updates restored from checkpoint")
     ppo.add_argument("--max-episode-steps", type=int, default=8)
-    ppo.add_argument("--max-new-tokens", type=int, default=256)
-    ppo.add_argument("--temperature", type=float, default=0.8)
-    ppo.add_argument("--top-p", type=float, default=0.95)
-    ppo.add_argument("--ppo-epochs", type=int, default=4)
+    ppo.add_argument("--max-new-tokens", type=int, default=512)
+    ppo.add_argument("--temperature", type=float, default=1.0)
+    ppo.add_argument("--top-p", type=float, default=1.0)
+    ppo.add_argument("--ppo-epochs", type=int, default=2)
+    ppo.add_argument("--rollout-episodes", type=int, default=8)
+    ppo.add_argument("--stats-chunk-size", type=int, default=32)
+    ppo.add_argument("--target-kl", type=float, default=0.1)
+    ppo.add_argument("--max-invalid-fraction", type=float, default=0.5)
+    ppo.add_argument("--invalid-patience", type=int, default=2)
+    ppo.add_argument("--max-seconds", type=float, default=7200)
+    ppo.add_argument("--kl-coefficient", type=float, default=0.02)
+    ppo.add_argument("--entropy-coefficient", type=float, default=0.0)
+    ppo.add_argument("--value-learning-rate", type=float, default=1e-6)
+    ppo.add_argument("--require-cuda", action="store_true",
+                     help="fail before model loading if this GPU job has no CUDA device")
     smoke = commands.add_parser("smoke", help="GPU adapter save/reload generation check")
     smoke.add_argument("--adapter-checkpoint", type=Path, required=True)
     smoke.add_argument("--output", type=Path, required=True)
@@ -282,8 +297,40 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(dict(result), sort_keys=True))
         return 0
     if args.method == "ppo":
+        status_path = args.output / "training_status.json"
+        if status_path.is_file():
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("status") == "stopped" and status.get("reason") in {
+                "invalid_proposals", "reference_kl",
+            }:
+                raise ValueError("PPO pilot failed a safety gate; review before a new experiment")
+        if args.resume_from_checkpoint is None and any(
+            (args.output / name).exists()
+            for name in ("ppo_state.json", "ppo_run.json", "training_manifest.json")
+        ):
+            raise ValueError(
+                "PPO output contains an existing run; resume explicitly or use a new path")
         if args.resume_from_checkpoint is not None:
             checkpoint = Path(args.resume_from_checkpoint)
+            metadata = json.loads((checkpoint / "ppo_state.json").read_text(encoding="utf-8"))
+            if metadata.get("implementation_version") != PPO_IMPLEMENTATION_VERSION:
+                raise ValueError(
+                    "legacy PPO checkpoint cannot resume corrected PPO; start from SFT")
+            if metadata.get("tensor_state_sha256") != _file_hash(checkpoint / "ppo_state.pt"):
+                raise ValueError("PPO checkpoint tensor checksum failed before model loading")
+            if (metadata.get("model_name") != MODEL_NAME
+                    or metadata.get("model_revision") != args.model_revision
+                    or metadata.get("tokenizer_revision") != args.tokenizer_revision):
+                raise ValueError(
+                    "PPO checkpoint model/tokenizer identity differs from requested policy")
+            for name, key in (("adapter", "adapter_hash"),
+                              ("reference_adapter", "reference_adapter_hash")):
+                if (not (checkpoint / name).is_dir()
+                        or _path_hash(checkpoint / name) != metadata.get(key)):
+                    raise ValueError("PPO adapter checksum failed before model loading")
+            restored = metadata.get("update_index")
+            if type(restored) is not int or not 0 <= restored <= args.updates:
+                raise ValueError("PPO checkpoint is beyond the requested total update target")
             args.adapter_checkpoint = checkpoint / "adapter"
             args.reference_adapter_checkpoint = checkpoint / "reference_adapter"
         elif args.adapter_checkpoint is None:
@@ -294,22 +341,89 @@ def main(argv: list[str] | None = None) -> int:
             max_episode_steps=args.max_episode_steps,
             max_new_tokens=args.max_new_tokens, temperature=args.temperature,
             top_p=args.top_p, epochs_per_rollout=args.ppo_epochs,
+            rollout_episodes=args.rollout_episodes, stats_chunk_size=args.stats_chunk_size,
+            target_kl=args.target_kl, max_invalid_fraction=args.max_invalid_fraction,
+            kl_coefficient=args.kl_coefficient, entropy_coefficient=args.entropy_coefficient,
+            value_learning_rate=args.value_learning_rate,
         )
+        if args.resume_from_checkpoint is not None:
+            stored = metadata.get("run_contract")
+            if (not isinstance(stored, dict)
+                    or content_hash(stored) != metadata.get("run_fingerprint")):
+                raise ValueError(
+                    "PPO checkpoint run-contract fingerprint failed before model loading")
+            expected = {
+                "model_revision": settings.model_revision,
+                "tokenizer_revision": settings.tokenizer_revision,
+                "prompt_version": settings.prompt_version, "data_hashes": settings.data_hashes,
+                "seed": settings.seed, "learning_rate": settings.learning_rate,
+                "max_length": settings.max_length, "bf16": settings.bf16,
+                "gradient_checkpointing": settings.gradient_checkpointing,
+                "ppo": asdict(ppo_settings),
+            }
+            if any(canonical_json(stored.get(key)) != canonical_json(value)
+                   for key, value in expected.items()):
+                raise ValueError("PPO resume contract changed; use the original data and settings")
+        limits = PPOTrainingLimits(max_seconds=args.max_seconds,
+                                   invalid_patience=args.invalid_patience)
         # Parse every replay row and verify visibility before allocating Qwen.
         environment = _environment(args.environment_factory, args.environment_config)
+        from .validation import preflight_ppo_context
+        stack = resolve_training_stack("ppo")
+        if (args.resume_from_checkpoint is not None
+                and stored.get("package_versions") != stack["versions"]):
+            raise ValueError("PPO dependency versions changed; restore the original training stack")
+        if args.require_cuda and not stack["modules"]["torch"].cuda.is_available():
+            raise ValueError("CUDA is unavailable; refusing CPU training in the GPU job")
+        tokenizer = stack["modules"]["transformers"].AutoTokenizer.from_pretrained(
+            MODEL_NAME, revision=settings.tokenizer_revision,
+            trust_remote_code=False,
+        )
+        preflight_ppo_context(environment, tokenizer, max_length=settings.max_length,
+                              max_new_tokens=ppo_settings.max_new_tokens)
+        if _actual_data_hashes(args) != settings.data_hashes:
+            raise ValueError("PPO data changed during preflight; finish transfer before training")
+        for adapter in (settings.adapter_checkpoint, settings.reference_adapter_checkpoint):
+            if adapter is not None and not (
+                (adapter / "adapter_config.json").is_file()
+                and (adapter / "adapter_model.safetensors").is_file()
+            ):
+                raise ValueError("PPO requires a complete saved adapter before model loading")
+            if adapter is not None:
+                from safetensors import safe_open
+                try:
+                    with safe_open(str(adapter / "adapter_model.safetensors"),
+                                   framework="pt", device="cpu") as weights:
+                        if not list(weights.keys()):
+                            raise ValueError("adapter has no tensors")
+                except Exception as exc:
+                    raise ValueError("PPO adapter tensors are incomplete or invalid") from exc
+        if (args.resume_from_checkpoint is None
+                and settings.reference_adapter_checkpoint is not None
+                and _path_hash(settings.adapter_checkpoint)
+                != _path_hash(settings.reference_adapter_checkpoint)):
+            raise ValueError("fresh PPO policy and frozen reference must use the same SFT adapter")
+        adapter_input_hashes = {
+            path: _path_hash(path)
+            for path in (settings.adapter_checkpoint, settings.reference_adapter_checkpoint)
+            if path is not None
+        }
         optimizer = QwenPPOOptimizer.from_pretrained(
             settings=settings, ppo=ppo_settings)
+        if any(_path_hash(path) != digest for path, digest in adapter_input_hashes.items()):
+            raise ValueError("PPO adapter changed during loading; finish transfer before training")
         result = train_ppo(
             environment, optimizer,
             settings=settings, updates=args.updates,
-            package_versions=resolve_training_stack("ppo")["versions"],
+            package_versions=stack["versions"],
+            limits=limits,
         )
         print(json.dumps({
             "method": result.method, "output_dir": result.output_dir,
             "manifest_hash": result.manifest_hash, "metrics": dict(result.metrics),
             "elapsed_seconds": result.elapsed_seconds,
         }, sort_keys=True))
-        return 0
+        return 0 if result.metrics.get("status") == "completed" else 2
     train_rows = _jsonl(args.train)
     validation_rows = _jsonl(args.validation) if args.validation else []
     data_hashes = _actual_data_hashes(args)

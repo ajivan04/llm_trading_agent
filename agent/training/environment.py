@@ -148,6 +148,7 @@ class HistoricalPPOEnvironment:
     def step(self, action: str) -> tuple[Mapping[str, Any], float, bool, bool, Mapping[str, Any]]:
         episode = self.episodes[self._index]
         invalid = 0
+        failure = None
         try:
             decisions = parse_decisions(
                 action, allowed_symbols=(episode.symbol,),
@@ -156,7 +157,9 @@ class HistoricalPPOEnvironment:
             if len(decisions) != 1:
                 raise ValueError("one decision is required")
             decision = decisions[0]
-        except ValueError:
+        except ValueError as exc:
+            from agent.evaluation.model import decision_failure_category
+            failure = decision_failure_category(str(exc))
             invalid = 1
             decision = None
         cash = episode.starting_cash
@@ -164,10 +167,12 @@ class HistoricalPPOEnvironment:
         if decision is not None and decision.action != "hold":
             if decision.qty > episode.max_qty:
                 invalid = 1
+                failure = "risk_quantity"
             elif decision.action == "buy":
                 price = episode.next_open * (1 + episode.cost_bps / 10_000)
                 if decision.qty * price > cash:
                     invalid = 1
+                    failure = "risk_cash"
                 else:
                     cash -= decision.qty * price
                     quantity += decision.qty
@@ -175,6 +180,7 @@ class HistoricalPPOEnvironment:
                 price = episode.next_open * (1 - episode.cost_bps / 10_000)
                 if decision.qty > quantity:
                     invalid = 1
+                    failure = "risk_holdings"
                 else:
                     cash += decision.qty * price
                     quantity -= decision.qty
@@ -190,6 +196,7 @@ class HistoricalPPOEnvironment:
         next_observation = {"episode_id": "terminal", "messages": episode.messages}
         info = {
             "episode_id": episode.episode_id, "invalid_proposals": invalid,
+            "failure_category": failure,
             "equity_before": equity_before, "equity_after": equity_after,
             "reward_components": {
                 "net_log_return": math.log(equity_after / equity_before),
@@ -197,6 +204,8 @@ class HistoricalPPOEnvironment:
                 "invalid_proposals": float(invalid),
             },
         }
+        if failure is not None:
+            info["reward_components"][f"failure/{failure}"] = 1.0
         return next_observation, reward, done, False, info
 
 

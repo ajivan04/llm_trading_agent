@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import random
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -84,8 +86,8 @@ class TrainerSettings:
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.learning_rate <= 0:
-            raise ValueError("learning_rate must be positive")
+        if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive and finite")
 
 
 @dataclass(frozen=True)
@@ -455,15 +457,63 @@ class PPOOptimizer(Protocol):
     def load(self, checkpoint: Path) -> int: ...
 
 
+@dataclass(frozen=True)
+class PPOTrainingLimits:
+    """Wall-clock budget is checked between rollouts, not inside CUDA kernels."""
+
+    max_seconds: float = 7200.0
+    invalid_patience: int = 2
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.max_seconds) or self.max_seconds <= 0:
+            raise ValueError("PPO max_seconds must be positive and finite")
+        if type(self.invalid_patience) is not int or self.invalid_patience <= 0:
+            raise ValueError("PPO invalid_patience must be a positive integer")
+
+
+def _ppo_json(path: Path, payload: Mapping[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(canonical_json(payload) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _ppo_append(path: Path, payload: Mapping[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(canonical_json(payload) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def train_ppo(
     environment: PPOEnvironment, optimizer: PPOOptimizer, *, settings: TrainerSettings,
     lora: LoRASettings | None = None, updates: int,
     package_versions: Mapping[str, str], clock: Callable[[], float] = time.monotonic,
+    limits: PPOTrainingLimits | None = None,
 ) -> TrainingResult:
-    """Enforce fresh on-policy collection around a Qwen-backed PPO optimizer."""
+    """Train toward a total update target with durable progress and safety gates.
+
+    A stopped pilot is resumable research output, never a completed release.
+    """
     lora = lora or LoRASettings()
+    limits = limits or PPOTrainingLimits()
     if type(updates) is not int or updates <= 0:
         raise ValueError("PPO updates must be positive")
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+    status_path = settings.output_dir / "training_status.json"
+    if status_path.is_file():
+        previous_status = json.loads(status_path.read_text())
+        if previous_status.get("status") == "stopped" and previous_status.get("reason") in {
+            "invalid_proposals", "reference_kl",
+        }:
+            raise ValueError(
+                "PPO pilot failed a safety gate; review it before starting a new experiment")
+    if settings.resume_from_checkpoint is None and any(
+        (settings.output_dir / name).exists()
+        for name in ("ppo_state.json", "ppo_metrics.jsonl", "training_manifest.json",
+                     "ppo_run.json")
+    ):
+        raise ValueError(
+            "PPO output already contains a run; resume explicitly or use a new directory")
     start_update = 0
     if settings.resume_from_checkpoint is not None:
         checkpoint = Path(settings.resume_from_checkpoint)
@@ -472,46 +522,160 @@ def train_ppo(
         start_update = optimizer.load(checkpoint)
         if type(start_update) is not int or start_update < 0:
             raise ValueError("PPO checkpoint must report a nonnegative update index")
+    if start_update > updates:
+        raise ValueError("PPO checkpoint is beyond the requested total update target")
+    completion_path = settings.output_dir / "training_manifest.json"
+    history_path = settings.output_dir / "ppo_metrics.jsonl"
+    recorded = []
+    if history_path.exists():
+        recorded = [json.loads(line) for line in history_path.read_text().splitlines()
+                    if line.strip()]
+        indices = [item["update"] for item in recorded]
+        if len(set(indices)) != len(indices) or indices != sorted(indices):
+            raise ValueError("PPO metrics contain duplicate or unordered updates")
+        if indices and indices[-1] > start_update:
+            raise ValueError(
+                "PPO metrics are newer than the checkpoint; resume the latest durable state")
+    ppo = getattr(optimizer, "ppo", None)
+    kl_limit = float(getattr(ppo, "target_kl", 0.1))
+    invalid_limit = float(getattr(ppo, "max_invalid_fraction", 0.5))
+    if not math.isfinite(kl_limit) or kl_limit <= 0 or not 0 <= invalid_limit <= 1:
+        raise ValueError("invalid PPO safety thresholds")
+    run_contract = {
+        "model_revision": settings.model_revision,
+        "tokenizer_revision": settings.tokenizer_revision,
+        "prompt_version": settings.prompt_version, "data_hashes": settings.data_hashes,
+        "seed": settings.seed, "learning_rate": settings.learning_rate,
+        "max_length": settings.max_length, "invalid_patience": limits.invalid_patience,
+        "target_kl": kl_limit, "max_invalid_fraction": invalid_limit,
+        "optimizer_contract": getattr(optimizer, "_run_contract", {}),
+    }
+    run_path = settings.output_dir / "ppo_run.json"
+    if run_path.exists():
+        previous = json.loads(run_path.read_text())
+        if canonical_json(previous["contract"]) != canonical_json(run_contract):
+            raise ValueError("PPO run controls differ; resume with the original contract")
+    else:
+        _ppo_json(run_path, {"contract": run_contract, "package_versions": dict(package_versions)})
+    if completion_path.is_file() and start_update < updates:
+        # A completed pilot is not a completion certificate for its extension.
+        previous_manifest = json.loads(completion_path.read_text())
+        archive = settings.output_dir / (
+            f"completed_manifest-{content_hash(previous_manifest)}.json"
+        )
+        completion_path.replace(archive)
     started = clock()
     metrics: dict[str, Any] = {}
-    update_history: list[dict[str, Any]] = []
+    completed = start_update
+    updates_this_invocation = 0
+    sampled_decisions = 0
+    invalid_streak = 0
+    for item in reversed(recorded):
+        if float(item.get("invalid_fraction", 0.0)) > invalid_limit:
+            invalid_streak += 1
+        else:
+            break
+    status = "completed"
+    reason = None
     seen: set[str] = set()
-    for index in range(start_update, start_update + updates):
-        rollout_id = content_hash({
-            "policy_version": optimizer.policy_version, "update": index,
-            "seed": settings.seed,
+    try:
+        for index in range(start_update, updates):
+            if clock() - started >= limits.max_seconds:
+                status, reason = "stopped", "runtime_budget"
+                break
+            rollout_id = content_hash({
+                "policy_version": optimizer.policy_version, "update": index,
+                "seed": settings.seed,
+            })
+            if rollout_id in seen:
+                raise ValueError("PPO rollout ID was reused")
+            print(canonical_json({"event": "ppo_collect", "update": index + 1,
+                                  "target_updates": updates}), flush=True)
+            rollout = optimizer.collect(
+                environment, rollout_id=rollout_id, seed=settings.seed + index)
+            validate_fresh_rollout(
+                rollout, current_policy_version=optimizer.policy_version,
+                expected_rollout_id=rollout_id,
+            )
+            sampled_decisions += len(rollout.transitions)
+            invalid_indicators = [
+                float(item.reward_components.get("invalid_proposals", 0.0))
+                for item in rollout.transitions
+            ]
+            if any(not 0 <= value <= 1 for value in invalid_indicators):
+                raise ValueError("PPO invalid-proposal indicators must be fractions in [0, 1]")
+            invalid_fraction = sum(invalid_indicators) / len(rollout.transitions)
+            invalid_streak = invalid_streak + 1 if invalid_fraction > invalid_limit else 0
+            event = {
+                "update": index + 1, "rollout_id": rollout_id,
+                "collection_seed": settings.seed + index,
+                "policy_version": rollout.policy_version,
+                "sampled_decisions": len(rollout.transitions),
+                "episodes": rollout.episode_count, "invalid_fraction": invalid_fraction,
+                "action_tokens": sum(sum(item.action_mask) for item in rollout.transitions),
+                "failure_counts": {
+                    key.removeprefix("failure/"): sum(
+                        item.reward_components.get(key, 0.0) for item in rollout.transitions
+                    )
+                    for key in sorted({key for item in rollout.transitions
+                                       for key in item.reward_components
+                                       if key.startswith("failure/")})
+                },
+            }
+            _ppo_append(settings.output_dir / "ppo_rollouts.jsonl", event)
+            if invalid_streak >= limits.invalid_patience:
+                status, reason = "stopped", "invalid_proposals"
+                break
+            if clock() - started >= limits.max_seconds:
+                status, reason = "stopped", "runtime_budget"
+                break
+            metrics = dict(optimizer.update(rollout))
+            if any(not math.isfinite(float(value)) for value in metrics.values()):
+                raise ValueError("PPO optimizer returned nonfinite metrics")
+            completed = index + 1
+            updates_this_invocation += 1
+            seen.add(rollout_id)
+            record = {**event, **metrics, "elapsed_seconds": clock() - started}
+            _ppo_append(history_path, record)
+            print(canonical_json({"event": "ppo_update", "target_updates": updates,
+                                  **record}), flush=True)
+            if completed % settings.save_steps == 0:
+                optimizer.save(settings.output_dir / f"checkpoint-{completed}")
+            measured_kl = max(float(metrics.get("reference_kl", 0.0)),
+                              float(metrics.get("reference_kl_max", 0.0)),
+                              float(metrics.get("post_update_reference_kl", 0.0)))
+            if measured_kl > kl_limit:
+                status, reason = "stopped", "reference_kl"
+                break
+    except Exception as exc:
+        _ppo_json(settings.output_dir / "training_status.json", {
+            "status": "failed", "reason": type(exc).__name__,
+            "completed_updates": completed, "target_updates": updates,
+            "elapsed_seconds": clock() - started,
+            "runtime_budget_seconds": limits.max_seconds,
+            "invalid_streak": invalid_streak,
         })
-        if rollout_id in seen:
-            raise ValueError("PPO rollout ID was reused")
-        rollout = optimizer.collect(
-            environment, rollout_id=rollout_id, seed=settings.seed + index)
-        validate_fresh_rollout(
-            rollout, current_policy_version=optimizer.policy_version,
-            expected_rollout_id=rollout_id,
-        )
-        metrics = dict(optimizer.update(rollout))
-        update_history.append({"update": index + 1, "rollout_id": rollout_id, **metrics})
-        seen.add(rollout_id)
-        if (index + 1) % settings.save_steps == 0:
-            optimizer.save(settings.output_dir / f"checkpoint-{index + 1}")
+        raise
     elapsed = clock() - started
     optimizer.save(settings.output_dir)
     torch_module = getattr(optimizer, "torch", None)
     if torch_module is not None:
         metrics = _with_runtime_metrics(metrics, torch_module)
-    metrics["completed_updates"] = len(update_history)
+    metrics.update({"completed_updates": completed,
+                    "updates_this_invocation": updates_this_invocation,
+                    "sampled_decisions_this_invocation": sampled_decisions,
+                    "status": status, "stop_reason": reason})
     manifest = _manifest("ppo", settings, lora, package_versions)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = settings.output_dir / "ppo_metrics.jsonl"
-    existing_metrics = (
-        metrics_path.read_text(encoding="utf-8")
-        if settings.resume_from_checkpoint is not None and metrics_path.exists() else ""
-    )
-    metrics_path.write_text(
-        existing_metrics + "".join(
-            canonical_json(item) + "\n" for item in update_history), encoding="utf-8")
-    (settings.output_dir / "training_manifest.json").write_text(canonical_json({
-        "manifest_hash": manifest.manifest_hash, "manifest": asdict(manifest),
-        "metrics": metrics, "elapsed_seconds": elapsed, "rollout_ids": sorted(seen),
-    }) + "\n", encoding="utf-8")
+    _ppo_json(settings.output_dir / "training_status.json", {
+        "status": status, "reason": reason, "completed_updates": completed,
+        "target_updates": updates, "elapsed_seconds": elapsed, "metrics": metrics,
+        "runtime_budget_seconds": limits.max_seconds,
+        "invalid_streak": invalid_streak,
+    })
+    if status == "completed":
+        _ppo_json(settings.output_dir / "training_manifest.json", {
+            "manifest_hash": manifest.manifest_hash, "manifest": asdict(manifest),
+            "metrics": metrics, "elapsed_seconds": elapsed, "rollout_ids": sorted(seen),
+            "optimizer_contract": getattr(optimizer, "_run_contract", {}),
+        })
     return TrainingResult("ppo", str(settings.output_dir), manifest.manifest_hash, metrics, elapsed)

@@ -45,8 +45,10 @@ class HistoricalPPOEnvironmentTests(unittest.TestCase):
     def test_invalid_action_is_penalized_and_nontrain_episode_is_rejected(self):
         environment = HistoricalPPOEnvironment((replay_episode(),))
         environment.reset(seed=1)
-        _next, invalid_reward, *_rest = environment.step("not-json")
+        _next, invalid_reward, _done, _truncated, info = environment.step("not-json")
         self.assertLess(invalid_reward, 0)
+        self.assertEqual(info["failure_category"], "invalid_json")
+        self.assertEqual(info["reward_components"]["failure/invalid_json"], 1)
         with self.assertRaisesRegex(ValueError, "train-only"):
             replay_episode(split="validation")
         with self.assertRaisesRegex(ValueError, "future outcome"):
