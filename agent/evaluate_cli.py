@@ -14,6 +14,7 @@ from agent.evaluation import (
     load_outcomes,
     score_generations,
 )
+from agent.evaluation.model import SCORING_VERSION
 from agent.training import MODEL_NAME, MODEL_REVISION
 
 
@@ -109,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         "dataset_hash": dataset.manifest.dataset_hash,
         "adapter_hash": adapter_digest, "max_new_tokens": args.max_new_tokens,
         "max_examples": args.max_examples,
+        "scoring_version": SCORING_VERSION,
     }
 
     def evaluate(_config, _split):

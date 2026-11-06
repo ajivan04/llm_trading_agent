@@ -3,12 +3,36 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from agent.policy import parse_decisions
 from agent.training import EpisodeExample
+
+SCORING_VERSION = "visible-evidence-v2"
+
+
+def decision_failure_category(message: str) -> str:
+    """Categorize trusted validator errors without logging generated text."""
+    if "not valid JSON" in message:
+        return "invalid_json"
+    if "future evidence" in message:
+        return "future_evidence"
+    if "cutoff" in message or "decision time" in message:
+        return "cutoff_mismatch"
+    if "evidence record" in message or "visible symbol evidence" in message:
+        return "invalid_evidence"
+    if "cites unavailable evidence" in message or "unknown evidence" in message:
+        return "unavailable_evidence"
+    if "symbol" in message:
+        return "invalid_symbol"
+    if "qty" in message or "quantity" in message:
+        return "invalid_quantity"
+    if "exactly one decision" in message:
+        return "decision_count"
+    return "invalid_schema"
 
 
 @dataclass(frozen=True)
@@ -53,7 +77,7 @@ def load_outcomes(path, *, split: str) -> tuple[EvaluationOutcome, ...]:
 def score_generations(
     examples: Sequence[EpisodeExample], outcomes: Sequence[EvaluationOutcome],
     generations: Mapping[str, str],
-) -> tuple[dict[str, float | int], tuple[Mapping[str, Any], ...]]:
+) -> tuple[dict[str, Any], tuple[Mapping[str, Any], ...]]:
     """Score schema validity, expert agreement, objective, and regret."""
     outcome_by_id = {item.example_id: item for item in outcomes}
     if len(outcome_by_id) != len(outcomes):
@@ -61,24 +85,41 @@ def score_generations(
     if set(outcome_by_id) != {item.example_id for item in examples}:
         raise ValueError("outcomes must exactly cover evaluation examples")
     records = []
+    failures: Counter[str] = Counter()
+    json_valid = 0
     valid = correct = trades = 0
     objective_sum = regret_sum = 0.0
     for example in examples:
         outcome = outcome_by_id[example.example_id]
         raw = generations.get(example.example_id, "")
         error = None
+        category = None
+        # Archive lineage is not evidence visibility. Validate only records
+        # actually supplied to this policy invocation, including eligible tools.
+        from agent.policy.evidence import visible_evidence
+        visible_ids = set(visible_evidence(
+            example.messages, expected_as_of=example.decision_at,
+        ))
+        allowed_ids = visible_ids & set(outcome.evidence_ids)
+        try:
+            json.loads(raw)
+            json_valid += 1
+        except (TypeError, json.JSONDecodeError):
+            pass
         try:
             decisions = parse_decisions(
                 raw, allowed_symbols=(outcome.symbol,),
-                allowed_evidence_ids=outcome.evidence_ids,
+                allowed_evidence_ids=allowed_ids,
             )
             if len(decisions) != 1:
                 raise ValueError("exactly one decision is required")
             action = decisions[0].action
             valid += 1
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             action = None
             error = type(exc).__name__
+            category = decision_failure_category(str(exc))
+            failures[category] += 1
         worst = min(float(value) for value in outcome.objectives.values())
         objective = float(outcome.objectives[action]) if action is not None else worst
         best = max(float(value) for value in outcome.objectives.values())
@@ -91,6 +132,7 @@ def score_generations(
             "action": action, "expert_action": outcome.chosen,
             "objective": objective, "regret": best - objective,
             "valid": action is not None, "error_class": error,
+            "failure_category": category,
         })
     count = len(examples)
     if count == 0:
@@ -98,6 +140,8 @@ def score_generations(
     return ({
         "examples": count,
         "valid_schema_rate": valid / count,
+        "json_valid_rate": json_valid / count,
+        "failure_counts": dict(sorted(failures.items())),
         "expert_action_accuracy": correct / count,
         "trade_rate": trades / count,
         "mean_incremental_return": objective_sum / count,

@@ -10,6 +10,7 @@ from typing import Any
 
 from agent.contracts import canonical_json
 from agent.policy import parse_decisions
+from agent.policy.evidence import visible_evidence
 
 from .metrics import financial_metrics
 from .model import load_outcomes
@@ -70,6 +71,8 @@ def replay_predictions(
     }
     events: list[dict[str, Any]] = []
     invalid_decisions = 0
+    invalid_policy_decisions = 0
+    execution_rejections = 0
     for example_id, example in examples.items():
         outcome = outcomes[example_id]
         decision_session = str(example.decision_at)[:10]
@@ -78,10 +81,13 @@ def replay_predictions(
         if bar is None:
             raise ValueError(f"missing execution bar for {example_id}")
         raw = prediction_rows[example_id].get("generation", "")
+        allowed_ids = set(visible_evidence(
+            example.messages, expected_as_of=example.decision_at,
+        )) & set(outcome.evidence_ids)
         try:
             decisions = parse_decisions(
                 raw, allowed_symbols=(outcome.symbol,),
-                allowed_evidence_ids=outcome.evidence_ids,
+                allowed_evidence_ids=allowed_ids,
             )
             if len(decisions) != 1:
                 raise ValueError("exactly one decision is required")
@@ -89,6 +95,7 @@ def replay_predictions(
         except (TypeError, ValueError):
             decision = None
             invalid_decisions += 1
+            invalid_policy_decisions += 1
         events.append({
             "example_id": example_id, "decision_session": decision_session,
             "execution_session": execution_session, "symbol": outcome.symbol,
@@ -135,40 +142,63 @@ def replay_predictions(
                 })
             else:
                 invalid_decisions += 1
-        close_values = {
-            symbol: float(bar_by_symbol_session[(symbol, session)]["close"])
-            for symbol in shares
-            if (symbol, session) in bar_by_symbol_session
-        }
-        equity = cash + sum(shares[symbol] * close_values.get(symbol, 0.0)
-                            for symbol in shares)
-        gross = sum(shares[symbol] * close_values.get(symbol, 0.0) for symbol in shares)
+                execution_rejections += 1
+        close_values = {}
+        for symbol, quantity in shares.items():
+            if quantity <= 0:
+                continue
+            mark = bar_by_symbol_session.get((symbol, session))
+            if mark is None:
+                raise ValueError(f"missing closing mark for held symbol {symbol} on {session}")
+            close = float(mark["close"])
+            if not math.isfinite(close) or close <= 0:
+                raise ValueError(f"invalid closing mark for held symbol {symbol} on {session}")
+            close_values[symbol] = close
+        gross = sum(shares[symbol] * close for symbol, close in close_values.items())
+        equity = cash + gross
         curve.append({"session": session, "cash": cash, "equity": equity,
                       "gross_exposure": gross})
 
     equities = [float(row["equity"]) for row in curve]
     benchmark = [float(initial_cash)]
     symbols = sorted({row["symbol"] for row in events})
+    benchmark_symbols = 0
     if symbols and len(curve) > 1:
-        first_session, last_session = curve[1]["session"], curve[-1]["session"]
-        first_prices = [bar_by_symbol_session[(symbol, first_session)]["open"] for symbol in symbols
-                        if (symbol, first_session) in bar_by_symbol_session]
-        last_prices = [bar_by_symbol_session[(symbol, last_session)]["close"] for symbol in symbols
-                       if (symbol, last_session) in bar_by_symbol_session]
-        if first_prices and last_prices:
-            benchmark.extend(
-                [float(initial_cash)] * (len(curve) - 1)
-            )
-            benchmark[-1] = initial_cash * (
-                sum(float(last) / float(first) for first, last in zip(first_prices, last_prices))
-                / len(first_prices)
-            )
+        first_session = curve[1]["session"]
+        # Fix the equal-weight buy-and-hold cohort using only availability at
+        # entry. Later coverage must never change which symbols were bought.
+        first_prices = {
+            symbol: float(bar_by_symbol_session[(symbol, first_session)]["open"])
+            for symbol in symbols if (symbol, first_session) in bar_by_symbol_session
+        }
+        if not first_prices or any(
+                not math.isfinite(price) or price <= 0 for price in first_prices.values()):
+            raise ValueError("benchmark requires positive opening prices at entry")
+        benchmark_symbols = len(first_prices)
+        for row in curve[1:]:
+            relatives = []
+            for symbol, first in first_prices.items():
+                mark = bar_by_symbol_session.get((symbol, row["session"]))
+                if mark is None:
+                    raise ValueError(
+                        f"missing benchmark closing mark for {symbol} on {row['session']}"
+                    )
+                close = float(mark["close"])
+                if not math.isfinite(close) or close <= 0:
+                    raise ValueError("benchmark requires positive closing marks")
+                relatives.append(close / first)
+            benchmark.append(initial_cash * sum(relatives) / benchmark_symbols)
+    for row, value in zip(curve, benchmark, strict=True):
+        row["benchmark_equity"] = value
     metrics = financial_metrics(equities, benchmark_equities=benchmark, turnover=total_turnover)
     metrics.update({
         "starting_cash": initial_cash, "ending_equity": equities[-1],
         "dollar_profit": equities[-1] - initial_cash,
         "percentage_return": equities[-1] / initial_cash - 1,
         "invalid_decisions": invalid_decisions, "executed_trades": len(trades),
+        "invalid_policy_decisions": invalid_policy_decisions,
+        "execution_rejections": execution_rejections,
+        "benchmark_symbols": benchmark_symbols,
         "sessions": len(curve) - 1, "examples": len(events),
     })
     return PortfolioReplayResult(metrics, tuple(curve), tuple(trades))
