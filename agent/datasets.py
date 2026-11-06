@@ -9,6 +9,7 @@ from typing import Any
 
 from agent.contracts import Decision, Evidence, Snapshot, canonical_json, content_hash
 from agent.evaluation.splits import EpisodeWindow, purged_split
+from agent.policy.evidence import DECISION_INSTRUCTIONS
 from agent.training.core import EpisodeExample, validate_chronological_splits
 
 _FORBIDDEN_PROMPT_KEYS = {
@@ -156,7 +157,8 @@ class HistoricalDatasetBuilder:
 
     SYSTEM = (
         "Produce strict JSON paper-trading decisions from the supplied point-in-time "
-        "snapshot and evidence. Never infer access to later market data."
+        "snapshot and evidence. Never infer access to later market data. "
+        + DECISION_INSTRUCTIONS
     )
 
     def build(
