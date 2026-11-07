@@ -356,7 +356,9 @@ class AlpacaPaperBroker:
     """Extension boundary: deliberately unavailable until reconciliation is implemented.
 
     Use paper=True only. Never retry POST after a timeout without resolving state.
-    Reserve cash/shares for open orders. See design.md order state machine.
+    Reserve cash/shares for open orders. The operational implementation is
+    agent.execution.PaperExecutor, exposed by python -m agent.paper_cli.
+    This demo boundary cannot bypass its durable outbox and reconciliation.
     """
     def submit(self, *args, **kwargs):
         raise NotImplementedError('Implement paper-only broker, outbox and reconciliation first')
