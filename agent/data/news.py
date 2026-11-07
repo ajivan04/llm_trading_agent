@@ -4,17 +4,17 @@ from __future__ import annotations
 import json
 import math
 import time
-from html import unescape
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from html import unescape
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.error import HTTPError
-from urllib.request import Request as UrlRequest, urlopen
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from agent.contracts import Evidence, content_hash, normalize_timestamp, parse_timestamp
 from agent.data.cache import CacheIdentity, SqliteResponseCache
-
 
 Request = Callable[[Mapping[str, str]], Mapping[str, Any]]
 _ENDPOINT = "https://www.alphavantage.co/query"
@@ -42,7 +42,7 @@ def _provider_time(value: Any) -> str:
     formats = ("%Y%m%dT%H%M%S", "%Y%m%dT%H%M")
     for pattern in formats:
         try:
-            return normalize_timestamp(datetime.strptime(text, pattern).replace(tzinfo=timezone.utc))
+            return normalize_timestamp(datetime.strptime(text, pattern).replace(tzinfo=UTC))
         except ValueError:
             continue
     raise ValueError("news item time_published has an invalid format")
@@ -334,7 +334,7 @@ class AlpacaNewsAdapter:
                     "symbols": ",".join(batch),
                     "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "limit": str(limit),
+                    "limit": str(min(limit, 50)),
                     "sort": "asc",
                     "_api_key": self._api_key,
                     "_secret_key": self._secret_key,
@@ -350,8 +350,13 @@ class AlpacaNewsAdapter:
                 for raw in articles:
                     if not isinstance(raw, Mapping):
                         raise ValueError("Alpaca news item must be an object")
-                    published = parse_timestamp(raw.get("created_at") or raw.get("updated_at"))
-                    if published < start or published > end or published > cutoff:
+                    # The returned headline/summary is the CURRENT article
+                    # version. An old creation date does not make a later edit
+                    # available to an earlier replay decision.
+                    published = parse_timestamp(raw.get("created_at"))
+                    updated = parse_timestamp(raw.get("updated_at"))
+                    available = max(published, updated)
+                    if published < start or published > end or available > cutoff:
                         continue
                     article_symbols = {
                         str(item).strip().upper() for item in raw.get("symbols", [])
@@ -360,7 +365,8 @@ class AlpacaNewsAdapter:
                         if symbol not in article_symbols:
                             continue
                         title = unescape(str(raw.get("headline") or "").strip())
-                        summary = unescape(str(raw.get("summary") or raw.get("content") or "").strip())
+                        summary = unescape(str(
+                            raw.get("summary") or raw.get("content") or "").strip())
                         # Alpaca can return metadata-only records. They cannot
                         # provide NLP evidence, so omit them rather than failing
                         # the entire historical preparation run.
@@ -370,6 +376,7 @@ class AlpacaNewsAdapter:
                         values = {
                             "canonical_url": url,
                             "published_at": normalize_timestamp(published),
+                            "updated_at": normalize_timestamp(updated),
                             "title": title,
                             "summary": summary,
                             "publisher": str(raw.get("source") or "Alpaca").strip(),
@@ -383,11 +390,11 @@ class AlpacaNewsAdapter:
                         result.append(Evidence(
                             id=f"alpaca-news:{symbol}:{published.strftime('%Y%m%dT%H%M%S')}:{record_hash[:16]}",
                             source="alpaca.news", symbol=symbol,
-                            observed_at=published, available_at=published,
+                            observed_at=published, available_at=available,
                             retrieved_at=retrieved, text=f"{title}\n{summary}".strip(),
                             values=values, url=url, entitlement="alpaca",
                             raw_content_hash=record_hash,
-                            transformation_version="alpaca-news-v1",
+                            transformation_version="alpaca-news-v2-version-availability",
                         ))
                 page_token = payload.get("next_page_token")
                 if not page_token:
@@ -430,7 +437,8 @@ class CachedNewsAdapter:
         )
         cached = self.cache.get(identity, now=retrieved_at)
         if cached is not None:
-            if not isinstance(cached, list) or not all(isinstance(item, Mapping) for item in cached):
+            if (not isinstance(cached, list)
+                    or not all(isinstance(item, Mapping) for item in cached)):
                 raise ValueError("cached news payload is malformed")
             reconstructed = tuple(Evidence(**dict(item)) for item in cached)
             if all(

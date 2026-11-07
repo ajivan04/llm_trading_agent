@@ -4,7 +4,10 @@ from pathlib import Path
 
 from agent.data.cache import SqliteResponseCache
 from agent.data.news import (
-    AlphaVantageNewsAdapter, AlpacaNewsAdapter, CachedNewsAdapter, aggregate_news,
+    AlpacaNewsAdapter,
+    AlphaVantageNewsAdapter,
+    CachedNewsAdapter,
+    aggregate_news,
     canonicalize_url,
 )
 from agent.prepare_cli import _eligible_news
@@ -180,6 +183,7 @@ class AlpacaNewsTests(unittest.TestCase):
                 "summary": "Summary &amp; details",
                 "source": "Wire",
                 "created_at": "2026-01-05T14:00:00Z",
+                "updated_at": "2026-01-05T14:00:00Z",
                 "url": "https://example.com/story",
                 "symbols": ["AAPL", "MSFT"],
             }]}
@@ -200,6 +204,7 @@ class AlpacaNewsTests(unittest.TestCase):
             "key", "secret", lambda _params: {"news": [{
                 "headline": "Future", "summary": "", "source": "Wire",
                 "created_at": "2026-01-07T14:00:00Z", "url": "https://e.com/f",
+                "updated_at": "2026-01-07T14:00:00Z",
                 "symbols": ["AAPL"],
             }]},
         )
@@ -215,6 +220,7 @@ class AlpacaNewsTests(unittest.TestCase):
             "key", "secret", lambda _params: {"news": [{
                 "headline": "", "summary": "", "source": "Wire",
                 "created_at": "2026-01-05T14:00:00Z", "url": "https://e.com/empty",
+                "updated_at": "2026-01-05T14:00:00Z",
                 "symbols": ["AAPL"],
             }]},
         )
@@ -224,6 +230,53 @@ class AlpacaNewsTests(unittest.TestCase):
             retrieved_at="2026-01-06T01:00:00Z",
         )
         self.assertEqual(items, ())
+
+    def test_current_article_revision_is_not_backdated_to_creation(self):
+        article = {
+            "headline": "Revised after the replay decision", "summary": "Updated guidance",
+            "source": "Wire", "created_at": "2026-01-05T14:00:00Z",
+            "updated_at": "2026-01-07T14:00:00Z", "url": "https://example.com/revised",
+            "symbols": ["AAPL"],
+        }
+        adapter = AlpacaNewsAdapter("key", "secret", lambda _params: {"news": [article]})
+        early = adapter.fetch(("AAPL",), time_from="2026-01-01T00:00:00Z",
+                              time_to="2026-01-06T00:00:00Z", as_of="2026-01-06T00:00:00Z",
+                              retrieved_at="2026-01-08T00:00:00Z")
+        self.assertEqual(early, ())
+        later = adapter.fetch(("AAPL",), time_from="2026-01-01T00:00:00Z",
+                              time_to="2026-01-08T00:00:00Z", as_of="2026-01-08T00:00:00Z",
+                              retrieved_at="2026-01-08T01:00:00Z")
+        self.assertEqual(later[0].observed_at, "2026-01-05T14:00:00+00:00")
+        self.assertEqual(later[0].available_at, "2026-01-07T14:00:00+00:00")
+
+    def test_page_limit_is_provider_bounded_and_pagination_remains_complete(self):
+        calls = []
+
+        def request(params):
+            calls.append(params)
+            return {"news": [], "next_page_token": "second" if len(calls) == 1 else None}
+
+        AlpacaNewsAdapter("key", "secret", request).fetch(
+            ("AAPL",), time_from="2026-01-01T00:00:00Z", time_to="2026-01-06T00:00:00Z",
+            as_of="2026-01-06T00:00:00Z", retrieved_at="2026-01-06T01:00:00Z", limit=1000,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call["limit"] == "50" for call in calls))
+        self.assertEqual(calls[1]["page_token"], "second")
+
+    def test_unknown_or_invalid_version_timestamp_is_rejected(self):
+        for updated in (None, "not-a-time"):
+            article = {
+                "headline": "Unverified revision", "created_at": "2026-01-05T14:00:00Z",
+                "updated_at": updated, "url": "https://example.com/unverified", "symbols": ["AAPL"],
+            }
+            with self.subTest(updated=updated), self.assertRaises((TypeError, ValueError)):
+                AlpacaNewsAdapter("key", "secret", lambda _params, item=article: {
+                    "news": [item],
+                }).fetch(
+                    ("AAPL",), time_from="2026-01-01T00:00:00Z", time_to="2026-01-06T00:00:00Z",
+                    as_of="2026-01-06T00:00:00Z", retrieved_at="2026-01-06T01:00:00Z",
+                )
 
 
 class NewsAggregationTests(unittest.TestCase):

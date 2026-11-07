@@ -7,18 +7,21 @@ import json
 import os
 import zlib
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from agent.contracts import parse_timestamp
+from agent.contracts import content_hash, parse_timestamp
 from agent.data import (
-    AlphaVantageNewsAdapter, AlpacaNewsAdapter,
+    AlpacaNewsAdapter,
+    AlphaVantageNewsAdapter,
     SecDataAdapter,
     XNYSCalendar,
     YFinancePriceAdapter,
     aggregate_news,
 )
+from agent.datasets import _audit_payload
 from agent.evaluation import build_midterm_regime_plan
 from agent.preparation import PreparationSettings, prepare_training_artifacts
 from agent.universe import BASELINE_UNIVERSE
@@ -36,7 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-bps", type=float, default=5.0)
     parser.add_argument("--trade-qty", type=int, default=5)
     parser.add_argument(
-        "--regime", choices=("none", "midterm-election", "midterm-election-plus-recent"), default="none",
+        "--regime", choices=("none", "midterm-election", "midterm-election-plus-recent"),
+        default="none",
         help="restrict decision sessions to the declared event-regime windows",
     )
     parser.add_argument("--recent-start", default=None,
@@ -54,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--news-lookback-days", type=int, default=60)
     parser.add_argument("--sec-lookback-days", type=int, default=60)
     parser.add_argument("--news-limit", type=int, default=50)
+    parser.add_argument("--max-news-articles", type=int, default=8,
+                        help="maximum raw articles per symbol/decision; archive keeps all")
     parser.add_argument(
         "--news-provider", choices=("alpaca", "alpha-vantage"),
         default=os.environ.get("NEWS_PROVIDER", "alpaca"),
@@ -99,8 +105,36 @@ def _eligible_news(items, *, as_of: str, lookback_days: int):
     return tuple(
         item for item in items
         if item.eligible(as_of)
-        and (cutoff_at - parse_timestamp(item.available_at)).days <= lookback_days
+        and (cutoff_at - parse_timestamp(item.available_at)).total_seconds()
+        <= lookback_days * 86400
     )
+
+
+def select_news_evidence(items, *, as_of: str, lookback_days: int, max_articles: int = 8):
+    """Keep bounded actual article text, not just a numeric news aggregate."""
+    if type(max_articles) is not int or not 1 <= max_articles <= 50:
+        raise ValueError("max news articles must be 1..50")
+    eligible = _eligible_news(items, as_of=as_of, lookback_days=lookback_days)
+    return tuple(sorted(eligible, key=lambda item: (item.available_at, item.id),
+                        reverse=True)[:max_articles])
+
+
+def archive_news_evidence(prepared, articles):
+    """Retain every downloaded article, including those omitted from prompts.
+
+    This enables later offline context selection without pretending that an
+    aggregate contains recoverable headlines. Source records are never truncated.
+    """
+    rows = {row["id"]: row for row in prepared.evidence_rows}
+    for item in articles:
+        if item.source not in {"alpaca.news", "alpha_vantage.news"}:
+            raise ValueError("raw news archive requires normalized news evidence")
+        row = item.to_dict()
+        _audit_payload(row)
+        if row["id"] in rows and content_hash(rows[row["id"]]) != content_hash(row):
+            raise ValueError("conflicting raw news records share an evidence ID")
+        rows[row["id"]] = row
+    return replace(prepared, evidence_rows=tuple(rows[key] for key in sorted(rows)))
 
 
 def _news_windows(args, allowed_sessions: tuple[str, ...]):
@@ -131,7 +165,8 @@ def _news_windows(args, allowed_sessions: tuple[str, ...]):
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (args.news_lookback_days <= 0 or args.sec_lookback_days <= 0
-            or not 1 <= args.news_limit <= 1000):
+            or not 1 <= args.news_limit <= 1000
+            or not 1 <= args.max_news_articles <= 50):
         raise ValueError("lookback windows must be positive and news limit must be 1..1000")
     symbols = tuple(symbol.strip().upper() for symbol in args.symbols)
     if not symbols or any(not item for item in symbols) or len(set(symbols)) != len(symbols):
@@ -174,12 +209,12 @@ def main(argv: list[str] | None = None) -> int:
             allowed_sessions = tuple(sorted(set(allowed_sessions) | recent_sessions))
 
     evidence_provider = None
+    news_by_symbol: dict[str, tuple] = defaultdict(tuple)
+    sec_missing_symbols: list[str] = []
     if args.evidence_mode != "price-only":
         cutoff = datetime.fromisoformat(args.end).replace(tzinfo=UTC)
-        news_by_symbol: dict[str, tuple] = defaultdict(tuple)
         sec_by_symbol: dict[str, tuple] = defaultdict(tuple)
         sec_text_cache: dict[str, object] = {}
-        sec_missing_symbols: list[str] = []
         if args.evidence_mode in {"news", "news-sec"}:
             if args.news_provider == "alpaca":
                 api_key = os.environ.get("ALPACA_API_KEY", "")
@@ -234,6 +269,10 @@ def main(argv: list[str] | None = None) -> int:
                 extras.append(aggregate_news(
                     eligible_news, symbol=symbol, as_of=as_of, retrieved_at=retrieved_at,
                 ))
+                extras.extend(select_news_evidence(
+                    eligible_news, as_of=as_of, lookback_days=args.news_lookback_days,
+                    max_articles=args.max_news_articles,
+                ))
             if args.evidence_mode in {"sec", "news-sec"}:
                 cutoff_at = parse_timestamp(as_of)
                 eligible_sec = tuple(
@@ -262,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
         next_session_resolver=lambda session: calendar.next(session).session,
         evidence_provider=evidence_provider,
     )
+    prepared = archive_news_evidence(
+        prepared, (item for symbol in sorted(news_by_symbol) for item in news_by_symbol[symbol]),
+    )
     prepared.write(args.output)
     if regime_plan is not None:
         (args.output / "regime-plan.json").write_text(
@@ -277,6 +319,11 @@ def main(argv: list[str] | None = None) -> int:
         "news_provider": (
             args.news_provider if args.evidence_mode in {"news", "news-sec"} else None
         ),
+        "news_evidence_scope": (
+            "raw-headline-summary-and-aggregate"
+            if args.evidence_mode in {"news", "news-sec"} else None
+        ),
+        "max_news_articles_per_decision": args.max_news_articles,
         "evidence_records": len(prepared.evidence_rows),
         "sec_evidence_scope": (
             "submissions-metadata-and-bounded-text"
