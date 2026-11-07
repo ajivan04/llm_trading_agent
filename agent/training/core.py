@@ -185,6 +185,75 @@ def build_sft_example(
     return SFTExample(example.example_id, input_ids, attention, labels, supervised)
 
 
+def build_trajectory_sft_example(
+    example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    allowed_splits: tuple[str, ...] = ("train",),
+) -> SFTExample:
+    """Supervise assistant tool requests and final output, never tool data."""
+    import json
+    if not allowed_splits or not set(allowed_splits) <= _SPLITS:
+        raise ValueError("allowed_splits must name known nonempty splits")
+    if example.split not in allowed_splits:
+        raise ValueError("trajectory example is outside the explicitly allowed splits")
+    if type(max_length) is not int or max_length <= 0:
+        raise ValueError("max_length must be positive")
+    prior = list(example.messages)
+    calls = 0
+    for index, message in enumerate(prior):
+        if message.get("role") != "assistant":
+            continue
+        raw = message.get("content", "").strip()
+        if raw.startswith("<tool_call>") and raw.endswith("</tool_call>"):
+            raw = raw[len("<tool_call>"):-len("</tool_call>")].strip()
+        try:
+            request = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trajectory assistant turn must be an actual tool request") from exc
+        if (not isinstance(request, dict)
+                or set(request) not in ({"tool", "arguments"}, {"name", "arguments"})
+                or not isinstance(request.get("tool", request.get("name")), str)
+                or not isinstance(request.get("arguments"), dict)
+                or index + 1 == len(prior)
+                or prior[index + 1].get("role") not in {"user", "tool"}):
+            raise ValueError("trajectory tool request requires a following tool result")
+        calls += 1
+    if not calls:
+        raise ValueError("trajectory supervision requires an actual assistant tool request")
+    messages = [*prior, {"role": "assistant", "content": example.completion}]
+
+    def render(items, generation=False):
+        value = tokenizer.apply_chat_template(
+            items, tokenize=True, add_generation_prompt=generation,
+            return_dict=True, truncation=False)
+        if not isinstance(value, Mapping):
+            raise TypeError("native chat template must return a mapping")
+        ids = tuple(int(x) for x in value.get("input_ids", ()))
+        attention = tuple(int(x) for x in value.get("attention_mask", (1,) * len(ids)))
+        if not ids or len(ids) != len(attention) or any(x not in (0, 1) for x in attention):
+            raise ValueError("tokenizer returned inconsistent token arrays")
+        return ids, attention
+
+    ids, attention = render(messages)
+    if len(ids) > max_length:
+        raise ValueError("trajectory exceeds max_length; explicit packing is required")
+    labels = [-100] * len(ids)
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        before, _ = render(messages[:index], True)
+        through, _ = render(messages[:index + 1])
+        if (ids[:len(before)] != before or ids[:len(through)] != through
+                or len(through) <= len(before)):
+            raise ValueError("unable to derive exact native assistant token spans")
+        for offset in range(len(before), len(through)):
+            if attention[offset]:
+                labels[offset] = ids[offset]
+    supervised = sum(x != -100 for x in labels)
+    if not supervised:
+        raise ValueError("trajectory has no supervised assistant tokens")
+    return SFTExample(example.example_id, ids, attention, tuple(labels), supervised)
+
+
 @dataclass(frozen=True)
 class DPOCandidate:
     candidate_id: str

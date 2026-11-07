@@ -38,6 +38,7 @@ stock-agent-portfolio-evaluate = "agent.portfolio_eval_cli:main"
 stock-agent-prepare = "agent.prepare_cli:main"
 stock-agent-compact = "agent.compact_cli:main"
 stock-agent-train = "agent.training.cli:main"
+stock-agent-trajectories = "agent.trajectory_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*"]

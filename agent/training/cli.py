@@ -180,6 +180,7 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
 
 def _settings(args: argparse.Namespace, hashes: tuple[str, ...]) -> TrainerSettings:
     return TrainerSettings(
+        supervision_mode=getattr(args, "supervision", "final"),
         output_dir=args.output, model_revision=args.model_revision,
         tokenizer_revision=args.tokenizer_revision,
         prompt_version=args.prompt_version, data_hashes=hashes,
@@ -231,6 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="method", required=True)
     sft = commands.add_parser("sft", help="Train final-decision SFT")
     _add_common(sft)
+    sft.add_argument("--supervision", choices=("final", "trajectory"), default="final")
+    sft.add_argument("--preflight-only", action="store_true",
+                     help="Validate all native token spans without loading policy weights")
     dpo = commands.add_parser("dpo", help="Train same-state DPO")
     _add_common(dpo)
     dpo.add_argument("--beta", type=float, default=0.1)
@@ -440,8 +444,43 @@ def main(argv: list[str] | None = None) -> int:
         verified = load_dataset_artifact(args.train.parent)
         if verified.manifest.dataset_hash != dataset_hash:
             raise ValueError("SFT artifact identity changed during preflight")
+        has_trajectory = any(message.get("role") == "assistant"
+                             for row in (*train_rows, *validation_rows)
+                             for message in row["messages"])
+        if has_trajectory != (args.supervision == "trajectory"):
+            raise ValueError(
+                "SFT supervision mode must match the dataset's actual tool trajectories")
+        if args.supervision == "trajectory":
+            trajectory_path = args.train.parent.parent / "trajectory-manifest.json"
+            if not trajectory_path.exists():
+                raise ValueError("trajectory SFT requires its collection/export manifest")
+            trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            if (trajectory.get("dataset_hash") != dataset_hash
+                    or trajectory.get("supervision_mode") != "trajectory"
+                    or trajectory.get("test_policy_calls") != 0):
+                raise ValueError("trajectory export manifest does not match this dataset")
         data_hashes = tuple(dict.fromkeys((dataset_hash, *data_hashes)))
     settings = _settings(args, data_hashes)
+    if args.method == "sft" and args.preflight_only:
+        from agent.policy.loader import HuggingFaceQwenBackend
+
+        from .core import build_sft_example, build_trajectory_sft_example
+        backend = HuggingFaceQwenBackend(tokenizer_revision=args.tokenizer_revision)
+        backend.load_tokenizer()
+        builder = (build_trajectory_sft_example if args.supervision == "trajectory"
+                   else build_sft_example)
+        if not train_rows or not validation_rows:
+            raise ValueError("SFT preflight requires nonempty train and validation")
+        maximum = 0
+        total = len(train_rows) + len(validation_rows)
+        for row in (*train_rows, *validation_rows):
+            item = _episode_example(row)
+            built = builder(item, backend._tokenizer, max_length=args.max_length,
+                            allowed_splits=(item.split,))
+            maximum = max(maximum, len(built.input_ids))
+        print(canonical_json({"event": "sft_preflight", "examples": total,
+                              "max_tokens": maximum, "supervision": args.supervision}), flush=True)
+        return 0
     if args.method == "sft":
         result = train_sft(
             [_episode_example(row) for row in train_rows],

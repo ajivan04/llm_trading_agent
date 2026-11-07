@@ -16,9 +16,15 @@ def validate_supervised_example(example: EpisodeExample) -> None:
     symbols = {record["symbol"] for record in visible.values() if record.get("symbol")}
     if not visible or not symbols:
         raise ValueError("training prompt requires visible symbol evidence")
-    parse_decisions(
+    decisions = parse_decisions(
         example.completion, allowed_symbols=symbols, allowed_evidence_ids=visible,
     )
+    for decision in decisions:
+        if decision.action in {"buy", "sell"} and not decision.evidence_ids:
+            raise ValueError("trade targets require visible supporting evidence")
+        if any(visible[eid].get("symbol") not in (None, decision.symbol)
+               for eid in decision.evidence_ids):
+            raise ValueError("target cites evidence for another symbol")
 
 
 def validate_sft_targets(examples: Sequence[EpisodeExample]) -> None:

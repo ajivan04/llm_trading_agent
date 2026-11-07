@@ -22,6 +22,7 @@ from .core import (
     PPORollout,
     TrainingManifest,
     build_sft_example,
+    build_trajectory_sft_example,
     validate_fresh_rollout,
 )
 from .integrations import resolve_training_stack
@@ -66,8 +67,11 @@ class TrainerSettings:
     resume_from_checkpoint: str | None = None
     adapter_checkpoint: Path | None = None
     reference_adapter_checkpoint: Path | None = None
+    supervision_mode: str = "final"
 
     def __post_init__(self) -> None:
+        if self.supervision_mode not in {"final", "trajectory"}:
+            raise ValueError("unknown SFT supervision mode")
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         if self.adapter_checkpoint is not None:
             object.__setattr__(self, "adapter_checkpoint", Path(self.adapter_checkpoint))
@@ -108,12 +112,14 @@ def _seed_everything(seed: int, torch_module: Any) -> None:
         cuda.manual_seed_all(seed)
 
 
-def _load_policy(stack: Mapping[str, Any], settings: TrainerSettings, lora: LoRASettings):
+def _load_policy(stack: Mapping[str, Any], settings: TrainerSettings, lora: LoRASettings,
+                 tokenizer=None):
     modules = stack["modules"]
     transformers, peft = modules["transformers"], modules["peft"]
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        MODEL_NAME, revision=settings.tokenizer_revision, trust_remote_code=False,
-    )
+    if tokenizer is None:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            MODEL_NAME, revision=settings.tokenizer_revision, trust_remote_code=False,
+        )
     if getattr(tokenizer, "pad_token_id", None) is None:
         tokenizer.pad_token = tokenizer.eos_token
     cuda = getattr(modules["torch"], "cuda", None)
@@ -162,6 +168,8 @@ def _argument_values(settings: TrainerSettings, *, evaluate: bool) -> dict[str, 
 def _manifest(method: str, settings: TrainerSettings, lora: LoRASettings,
               versions: Mapping[str, str]) -> TrainingManifest:
     adapter_config = asdict(lora)
+    if method == "sft":
+        adapter_config["supervision_mode"] = settings.supervision_mode
     if settings.adapter_checkpoint is not None:
         adapter_config["initial_adapter_hash"] = _path_hash(settings.adapter_checkpoint)
     return TrainingManifest(
@@ -232,14 +240,18 @@ def train_sft(
     stack = stack_resolver("sft", expected_versions=expected_versions)
     modules = stack["modules"]
     _seed_everything(settings.seed, modules["torch"])
-    tokenizer, model = _load_policy(stack, settings, lora)
+    # Tokenize and validate every selective mask before allocating policy weights.
+    tokenizer = modules["transformers"].AutoTokenizer.from_pretrained(
+        MODEL_NAME, revision=settings.tokenizer_revision, trust_remote_code=False)
 
     def rows(examples: Sequence[EpisodeExample], split: str) -> list[dict[str, Any]]:
         converted = []
         for item in examples:
             if item.split != split:
                 raise ValueError(f"{split} dataset contains a {item.split} example")
-            built = build_sft_example(
+            builder = (build_trajectory_sft_example if settings.supervision_mode == "trajectory"
+                       else build_sft_example)
+            built = builder(
                 item, tokenizer, max_length=settings.max_length,
                 allowed_splits=(split,),
             )
@@ -252,6 +264,7 @@ def train_sft(
     train_data = _dataset(modules["datasets"], rows(train_examples, "train"))
     eval_data = (_dataset(modules["datasets"], rows(validation_examples, "validation"))
                  if validation_examples else None)
+    tokenizer, model = _load_policy(stack, settings, lora, tokenizer=tokenizer)
     args = modules["transformers"].TrainingArguments(
         **_argument_values(settings, evaluate=eval_data is not None))
     trainer = modules["transformers"].Trainer(
