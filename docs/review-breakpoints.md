@@ -166,3 +166,34 @@ plan correctly stops at the NLP-source gate. Refresh raw news before GPU
 collection; do not bypass this gate for the assignment run. Legacy v2 compaction
 source-to-target linkage is explicitly reported as unverified even when the
 preserved price hash, evidence count and compacted target integrity pass.
+
+## Breakpoint 4 implementation handoff
+
+See [paper-breakpoint.md](paper-breakpoint.md) for paper execution, durable cycle
+and intent behavior, live source refresh, FIFO-confirmed reflections, credentials,
+commands and operational limitations. See
+[research-evaluation.md](research-evaluation.md) for stateful validation jobs.
+
+354 tests pass in the project `.venv`. Changed/new implementation files pass
+Ruff, Python compilation and Git whitespace checks; the evaluation Slurm script
+passes Bash syntax. The offline demo still runs. Tests inject broker transports
+and scripted policies: no credentials, broker calls, real GPU model inference,
+training, or order submission were used to implement or verify these changes.
+An injected REST end-to-end test covers the documented account/asset/clock/
+order/quote shapes, stable IOC submission and duplicate-free reconciliation.
+
+Independent read-only reviews covered execution risks and evaluation/memory
+semantics. Review found a pending-order equity inflation defect, incomplete
+snapshot freshness checks, redirect handling, unsupported broker statuses,
+benchmark/source identity gaps, and a held-out-week date mismatch. These led to
+code changes and focused regression tests. Final integration also verifies
+intent checksums, cumulative delta totals, broker cash/positions against the
+confirmed ledger, unsupported corporate/manual account changes, and explicit
+never-submitted-intent repair.
+
+The implemented boundary is paper execution plus reflection memory and dynamic
+validation. Empirical paper dry-runs, model comparison, final notebook-facing
+submission entrypoints, immutable packaging and the aligned one-shot October
+26–30 test remain release gates. Do not score an October 30 decision's November
+2 outcome as part of that week. Historical NLP validation also still requires
+raw news, absent from the downloaded v5 archive.
