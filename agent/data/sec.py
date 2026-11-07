@@ -179,7 +179,10 @@ class SecDataAdapter:
         as_of: str | datetime,
         retrieved_at: str | datetime,
         forms: Iterable[str] = ("8-K", "10-Q", "10-K"),
+        include_historical: bool = True,
     ) -> tuple[Evidence, ...]:
+        if type(include_historical) is not bool:
+            raise ValueError("include_historical must be an explicit boolean")
         normalized_cik = normalize_cik(cik)
         payload = self._get(
             f"https://data.sec.gov/submissions/CIK{normalized_cik}.json"
@@ -195,7 +198,7 @@ class SecDataAdapter:
         ))
         # The SEC keeps only the recent filings inline. Older periods are listed
         # in filings.files and must be fetched explicitly for historical replay.
-        files = filings.get("files", ())
+        files = filings.get("files", ()) if include_historical else ()
         cutoff = parse_timestamp(as_of).date().isoformat()
         if isinstance(files, list):
             for descriptor in files:

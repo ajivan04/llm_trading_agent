@@ -241,7 +241,7 @@ class AssignmentTools:
                 if self.mode == "historical"
                 else f"live:{parse_timestamp(self.as_of).date().isoformat()}"
             ),
-            transformation_version="assignment-tools-v1",
+            transformation_version="assignment-tools-v2-live-actions",
         )
         cached = self.cache.get(identity, now=self._now())
         if cached is not None:
@@ -379,6 +379,8 @@ class AssignmentTools:
                 records[:limit],
                 cache_hit=hit,
                 sentiment="not supplied by Alpaca; infer only from article text",
+                coverage=("bounded latest provider page" if self.mode == "live"
+                          else "eligible archive records, output limited to requested count"),
             )
         except Exception:
             return self._output("alpaca.news", status="provider_error", error="news_unavailable")
@@ -687,7 +689,8 @@ class AssignmentTools:
     def _default_news_request(self, symbols, **kwargs):
         from agent.data.news import AlpacaNewsAdapter
 
-        return AlpacaNewsAdapter(self._alpaca_key, self._alpaca_secret).fetch(symbols, **kwargs)
+        return AlpacaNewsAdapter(self._alpaca_key, self._alpaca_secret).fetch(
+            symbols, latest_only=True, **kwargs)
 
     def _default_price_request(self, symbol, period):
         import yfinance
@@ -713,6 +716,10 @@ class AssignmentTools:
                 },
                 "volume": _number(row["Volume"]),
                 "price_basis": "raw",
+                "dividends": _number(row.get("Dividends", 0)),
+                "stock_splits": _number(row.get("Stock Splits", 0)),
+                "adjustment_policy": {"auto_adjust": False,
+                                      "basis": "raw prices with separately recorded actions"},
                 "historical_replay_safe": False,
             }
             records.append(
@@ -743,7 +750,7 @@ class AssignmentTools:
         if cik is None:
             return ()
         filings = adapter.fetch_submissions(
-            cik, symbol=symbol, as_of=cutoff, retrieved_at=self._now()
+            cik, symbol=symbol, as_of=cutoff, retrieved_at=self._now(), include_historical=False
         )
         selected = filings[-2:]
         return (

@@ -317,6 +317,7 @@ class QwenToolPolicy:
                     "cache_hit",
                     "error",
                     "freshness",
+                    "coverage",
                     "missing",
                     "date",
                     "message",

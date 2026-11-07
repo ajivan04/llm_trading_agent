@@ -311,7 +311,10 @@ class AlpacaNewsAdapter:
             raise RuntimeError("Alpaca returned an invalid news response")
         return payload
 
-    def fetch(self, symbols, *, time_from, time_to, as_of, retrieved_at, limit=50):
+    def fetch(self, symbols, *, time_from, time_to, as_of, retrieved_at, limit=50,
+              latest_only=False):
+        if type(latest_only) is not bool:
+            raise ValueError("latest_only must be an explicit boolean")
         normalized = tuple(str(symbol).strip().upper() for symbol in symbols)
         if not normalized or len(normalized) != len(set(normalized)):
             raise ValueError("symbols must be nonempty and unique")
@@ -335,7 +338,7 @@ class AlpacaNewsAdapter:
                     "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "limit": str(min(limit, 50)),
-                    "sort": "asc",
+                    "sort": "desc" if latest_only else "asc",
                     "_api_key": self._api_key,
                     "_secret_key": self._secret_key,
                 }
@@ -397,7 +400,7 @@ class AlpacaNewsAdapter:
                             transformation_version="alpaca-news-v2-version-availability",
                         ))
                 page_token = payload.get("next_page_token")
-                if not page_token:
+                if latest_only or not page_token:
                     break
             else:
                 raise RuntimeError("Alpaca news pagination exceeded the safety limit")
