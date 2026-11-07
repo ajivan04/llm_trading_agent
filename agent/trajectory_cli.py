@@ -312,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
             "source_file_hashes": summary["source_file_hashes"],
             "collector_code": _file_hash(Path(__file__).with_name("trajectories.py")),
             "cli_code": _file_hash(Path(__file__)),
+            "risk_code": _file_hash(Path(__file__).parent.parent / "trading_agent.py"),
+            "config_code": _file_hash(Path(__file__).with_name("config.py")),
             "news_lookback_days": args.news_lookback_days,
             "sec_lookback_days": args.sec_lookback_days,
         }

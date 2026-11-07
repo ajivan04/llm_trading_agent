@@ -11,6 +11,7 @@ import math
 import os
 import shutil
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -104,20 +105,25 @@ class TrajectoryCollection:
         }
 
 
-def _identity(value: Any) -> dict[str, Any]:
+def _identity(value: Any, *, evaluation_only: bool = False) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("base collection requires actual backend policy_identity")
     identity = json.loads(canonical_json(value))
     if (
         identity.get("model_name") != MODEL_NAME
         or identity.get("model_revision") != MODEL_REVISION
-        or identity.get("adapter_hash") != "base-model"
+        or (not evaluation_only and identity.get("adapter_hash") != "base-model")
+        or (not evaluation_only and identity.get("collection_purpose") == "evaluation")
+        or not isinstance(identity.get("adapter_hash"), str)
+        or not identity.get("adapter_hash")
     ):
         raise ValueError(
             "assignment trajectories must come from the pinned base policy, without adapter"
         )
     if not isinstance(identity.get("protocol_hash"), str) or not identity["protocol_hash"]:
         raise ValueError("policy_identity requires a prompt/tool/decoding protocol_hash")
+    if evaluation_only:
+        identity["collection_purpose"] = "evaluation"
     _audit_payload(identity)
     return identity
 
@@ -214,7 +220,9 @@ def load_collection(journal: Path) -> TrajectoryCollection:
     payload["universe"] = tuple(payload["universe"])
     payload["sector_map"] = tuple(tuple(row) for row in payload["sector_map"])
     settings = TrajectorySettings(**payload)
-    identity = _identity(contract["policy_identity"])
+    identity = _identity(
+        contract["policy_identity"], evaluation_only=contract.get("evaluation_only", False)
+    )
     with _journal(journal, contract, True) as records:
         planned = tuple(contract["planned_sessions"])
         if len(records) > len(planned) or any(
@@ -384,6 +392,7 @@ def collect_trajectories(
     journal: Path | None = None,
     resume: bool = False,
     max_sessions: int | None = None,
+    evaluation_only: bool = False,
 ) -> TrajectoryCollection:
     """Collect actual decisions; each split starts an independent cash portfolio.
 
@@ -393,7 +402,13 @@ def collect_trajectories(
     """
     if split not in {"train", "validation"}:
         raise ValueError("only train or explicit validation trajectory collection is allowed")
-    identity = _identity(policy_identity or getattr(decide, "policy_identity", None))
+    if type(evaluation_only) is not bool or (evaluation_only and split != "validation"):
+        raise ValueError(
+            "evaluation replay is validation-only; held-out execution is gated separately"
+        )
+    identity = _identity(
+        policy_identity or getattr(decide, "policy_identity", None), evaluation_only=evaluation_only
+    )
     if evidence_provider is not None and (
         not isinstance(evidence_source_hash, str)
         or len(evidence_source_hash) != 64
@@ -451,6 +466,7 @@ def collect_trajectories(
     )
     contract = {
         "version": PROTOCOL_VERSION,
+        "evaluation_only": evaluation_only,
         "settings": asdict(settings),
         "split": split,
         "policy_identity": identity,
@@ -534,6 +550,20 @@ def collect_trajectories(
             # The callback receives only decision-time inputs. Following-session
             # bars are accessed below only after its response has been captured.
             failure, recorded, captured = None, None, None
+            response = {}
+            started = time.monotonic()
+            print(
+                canonical_json(
+                    {
+                        "event": "policy_decision_start",
+                        "split": split,
+                        "session": current,
+                        "index": index + 1,
+                        "total": target,
+                    }
+                ),
+                flush=True,
+            )
             try:
                 response = decide(
                     state=json.loads(canonical_json(state)),
@@ -607,6 +637,7 @@ def collect_trajectories(
             else:
                 label, exclusion = "unlabeled", "flat_net_equity_change"
             trace = recorded or captured or {}
+            safe_response = response if isinstance(response, Mapping) else {}
             row = {
                 "example_id": f"trajectory:{split}:{current}",
                 "split": split,
@@ -623,6 +654,10 @@ def collect_trajectories(
                 "evidence_aliases": recorded["evidence_aliases"] if recorded else {},
                 "original_messages": recorded["original_messages"] if recorded else [],
                 "error_class": failure,
+                "policy_status": safe_response.get("status", "generation_failure"),
+                "policy_failure": safe_response.get("failure"),
+                "inference_seconds": time.monotonic() - started,
+                "initial_input_tokens": safe_response.get("initial_input_tokens"),
                 "fills": fills,
                 "execution_rejections": rejections,
                 "equity_before": before,
