@@ -238,8 +238,16 @@ def resolve_decisions(
                 if any(not isinstance(eid, str) for eid in references):
                     raise ValueError("decision evidence IDs must be strings")
                 decision["evidence_ids"] = [mapping.get(eid, eid) for eid in references]
-    return parse_decisions(
+    decisions = parse_decisions(
         canonical_json(payload),
         allowed_symbols=allowed_symbols,
         allowed_evidence_ids=allowed_ids,
     )
+    by_full = {mapping.get(eid, eid): record for eid, record in visible.items()}
+    for decision in decisions:
+        if decision.action in {"buy", "sell"} and not decision.evidence_ids:
+            raise ValueError("trade decisions require visible supporting evidence")
+        if any(by_full[eid].get("symbol") not in (None, decision.symbol)
+               for eid in decision.evidence_ids):
+            raise ValueError("decision cites evidence for another symbol")
+    return decisions
