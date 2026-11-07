@@ -133,3 +133,36 @@ absent from the new directory; their original paths remain intact.
 See [ppo-breakpoint.md](ppo-breakpoint.md) for changes, tests, limitations and
 two-update / ten-update / total-100 Turing commands. Production training remains
 unrun. Next implementation review is breakpoint 3: tools, news and trajectory SFT.
+
+## Breakpoint 3 handoff
+
+See [assignment-breakpoint.md](assignment-breakpoint.md) for the research-tool,
+raw-language context, actual base-policy trajectory and selective SFT changes,
+with separate collection/export/token-preflight/training review gates.
+
+Historical replay remains offline. The native pinned Qwen tokenizer was also
+checked with the complete 100-symbol universe, actual news/SEC text, a simulated
+assistant tool request and its dynamically cited result: both generation inputs
+fit the 4096-token budget (2741 then 3037 tokens). This used synthetic prices and
+scripted assistant outputs, not model inference or evidence of trading skill.
+
+No production collection or model training was launched. Old aggregate-only
+news archives need actual article text before the new NLP collection gate can
+pass. Full Alpaca paper execution, durable reconciliation and final frozen-loop
+validation remain breakpoint 4. Do not treat this handoff as permission to skip
+those checks or as a profit claim.
+
+Final verification: 284 tests passed in the project `.venv`, including the cached
+native Qwen tokenizer mask test. Changed Python files pass Ruff; compilation,
+Slurm shell syntax and Git whitespace checks pass. Independent read-only reviews
+covered tool/cache cutoff behavior, dynamic alias provenance, selective masks,
+trajectory risk/labels/splits, source-bound resumes and legacy compaction handling.
+
+The downloaded v5 dataset now passes integrity loading (21,575 examples); the
+previous incomplete-transfer row error was not reproduced. Its 25,883 evidence
+records contain 21,775 news aggregates, 2,054 SEC filing-text records and 2,054 SEC
+submission records, with zero raw news article records. The actual CPU collection
+plan correctly stops at the NLP-source gate. Refresh raw news before GPU
+collection; do not bypass this gate for the assignment run. Legacy v2 compaction
+source-to-target linkage is explicitly reported as unverified even when the
+preserved price hash, evidence count and compacted target integrity pass.
