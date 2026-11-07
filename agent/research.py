@@ -154,6 +154,7 @@ class ResearchPolicy:
         as_of: str,
         evidence: Sequence[Evidence],
         universe: Sequence[str],
+        memories: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         cutoff = normalize_timestamp(as_of)
         if normalize_timestamp(state.get("as_of")) != cutoff:
@@ -176,6 +177,7 @@ class ResearchPolicy:
             context = build_context(
                 state=account,
                 evidence=initial,
+                memories=memories,
                 tools=registry.schemas,
                 token_counter=self.backend.token_count,
                 max_context_tokens=(
