@@ -1,4 +1,5 @@
 """Command-line entrypoint for reproducible SFT, DPO, and PPO training."""
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +23,12 @@ from .execution import (
     train_sft,
 )
 from .integrations import resolve_training_stack
-from .qwen_ppo import PPO_IMPLEMENTATION_VERSION, QwenPPOOptimizer, QwenPPOSettings
+from .qwen_ppo import (
+    PPO_IMPLEMENTATION_VERSION,
+    QwenPPOOptimizer,
+    QwenPPOSettings,
+    initial_sft_provenance,
+)
 
 
 def _jsonl(path: Path) -> list[dict[str, Any]]:
@@ -70,11 +76,15 @@ def _actual_data_hashes(args: argparse.Namespace) -> tuple[str, ...]:
         if not isinstance(episode_path, str) or not episode_path:
             raise ValueError("PPO environment config must identify episodes_path")
         paths.append(Path(episode_path))
+        if config.get("protocol_path") is not None:
+            paths.append(Path(config["protocol_path"]))
     return tuple(dict.fromkeys(_file_hash(path) for path in paths))
 
 
 def _verify_sft_manifest(
-    train_path: Path, validation_path: Path, train_rows: list[dict[str, Any]],
+    train_path: Path,
+    validation_path: Path,
+    train_rows: list[dict[str, Any]],
     validation_rows: list[dict[str, Any]],
 ) -> str:
     if train_path.parent != validation_path.parent:
@@ -92,11 +102,13 @@ def _verify_sft_manifest(
         raise ValueError("SFT dataset artifact is missing examples.jsonl")
     all_rows = _jsonl(examples_path)
     identity = {
-        "examples": all_rows, "splits": split_ids,
+        "examples": all_rows,
+        "splits": split_ids,
         "purged": manifest.get("purged_episode_ids", []),
         "source_hashes": manifest.get("source_hashes", []),
         "boundaries": (
-            manifest.get("train_end"), manifest.get("validation_end"),
+            manifest.get("train_end"),
+            manifest.get("validation_end"),
             manifest.get("test_end"),
         ),
     }
@@ -112,8 +124,7 @@ def _verify_sft_manifest(
         raise ValueError("SFT split files differ from the verified dataset artifact")
     if [row.get("example_id") for row in train_rows] != list(split_ids.get("train", ())):
         raise ValueError("SFT train rows do not match the dataset manifest")
-    if [row.get("example_id") for row in validation_rows] != list(
-            split_ids.get("validation", ())):
+    if [row.get("example_id") for row in validation_rows] != list(split_ids.get("validation", ())):
         raise ValueError("SFT validation rows do not match the dataset manifest")
     return dataset_hash
 
@@ -129,8 +140,9 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
         raise ValueError("DPO row is missing audit_hash")
     if chosen.get("reset_id") == rejected.get("reset_id"):
         raise ValueError("DPO alternatives must use independent simulator resets")
-    if (chosen.get("simulator_hash") != rejected.get("simulator_hash")
-            or chosen.get("horizon_end") != rejected.get("horizon_end")):
+    if chosen.get("simulator_hash") != rejected.get("simulator_hash") or chosen.get(
+        "horizon_end"
+    ) != rejected.get("horizon_end"):
         raise ValueError("DPO alternatives must share simulator and horizon")
     identity = {
         "state_hash": pair_row.get("state_hash"),
@@ -146,6 +158,7 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
     # The audit covers candidate outcomes, not the separately serialized pair.
     # Rebuild it so a changed prompt/response/split cannot retain a valid old hash.
     from agent.preferences import CandidateOutcome, build_audited_dpo_pair
+
     outcomes = []
     for payload in (chosen, rejected):
         item = dict(payload)
@@ -153,8 +166,7 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
         outcomes.append(CandidateOutcome(**item))
     expected = build_audited_dpo_pair(*outcomes).pair
     recorded = {key: value for key, value in pair_row.items() if key != "audit_hash"}
-    expected_fields = {key: value for key, value in asdict(expected).items()
-                       if key != "audit_hash"}
+    expected_fields = {key: value for key, value in asdict(expected).items() if key != "audit_hash"}
     if recorded != expected_fields or expected.split != expected_split:
         raise ValueError("DPO pair does not match its audited candidates and split")
     if pair_row.get("audit_hash") not in (None, audit_hash):
@@ -162,6 +174,7 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
     # Prepared DPO prompts must preserve native chat data and supported citations.
     from agent.policy import parse_decisions
     from agent.policy.evidence import visible_evidence
+
     try:
         messages = json.loads(expected.prompt)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -181,14 +194,21 @@ def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
 def _settings(args: argparse.Namespace, hashes: tuple[str, ...]) -> TrainerSettings:
     return TrainerSettings(
         supervision_mode=getattr(args, "supervision", "final"),
-        output_dir=args.output, model_revision=args.model_revision,
+        stop_after_steps=getattr(args, "stop_after_steps", None),
+        output_dir=args.output,
+        model_revision=args.model_revision,
         tokenizer_revision=args.tokenizer_revision,
-        prompt_version=args.prompt_version, data_hashes=hashes,
-        seed=args.seed, learning_rate=args.learning_rate, max_steps=args.max_steps,
-        max_length=args.max_length, train_batch_size=args.train_batch_size,
+        prompt_version=args.prompt_version,
+        data_hashes=hashes,
+        seed=args.seed,
+        learning_rate=args.learning_rate,
+        max_steps=args.max_steps,
+        max_length=args.max_length,
+        train_batch_size=args.train_batch_size,
         eval_batch_size=args.eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        save_steps=args.save_steps, logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        logging_steps=args.logging_steps,
         bf16=not args.no_bf16,
         gradient_checkpointing=not args.no_gradient_checkpointing,
         resume_from_checkpoint=args.resume_from_checkpoint,
@@ -216,11 +236,13 @@ def _add_common(parser: argparse.ArgumentParser, *, datasets: bool = True) -> No
     parser.add_argument("--logging-steps", type=int, default=5)
     parser.add_argument("--resume-from-checkpoint")
     parser.add_argument(
-        "--adapter-checkpoint", type=Path,
+        "--adapter-checkpoint",
+        type=Path,
         help="Initialize from an existing trainable LoRA adapter (for example SFT before DPO)",
     )
     parser.add_argument(
-        "--reference-adapter-checkpoint", type=Path,
+        "--reference-adapter-checkpoint",
+        type=Path,
         help="Frozen SFT reference adapter for PPO (defaults to the initial adapter)",
     )
     parser.add_argument("--no-bf16", action="store_true")
@@ -232,19 +254,39 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="method", required=True)
     sft = commands.add_parser("sft", help="Train final-decision SFT")
     _add_common(sft)
-    sft.add_argument("--supervision", choices=("final", "trajectory"), default="final")
-    sft.add_argument("--preflight-only", action="store_true",
-                     help="Validate all native token spans without loading policy weights")
+    sft.add_argument("--require-cuda", action="store_true")
+    sft.add_argument(
+        "--supervision", choices=("final", "trajectory", "trajectory-final"), default="final"
+    )
+    sft.add_argument(
+        "--stop-after-steps",
+        type=int,
+        help="stop at this global step without changing the immutable max-steps scheduler plan",
+    )
+    sft.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="Validate all native token spans without loading policy weights",
+    )
     dpo = commands.add_parser("dpo", help="Train same-state DPO")
     _add_common(dpo)
     dpo.add_argument("--beta", type=float, default=0.1)
     ppo = commands.add_parser("ppo", help="Train with fresh simulator rollouts")
     _add_common(ppo, datasets=False)
     ppo.set_defaults(learning_rate=1e-5, save_steps=10, logging_steps=1)
+    ppo.add_argument(
+        "--require-assignment-sft",
+        action="store_true",
+        help="require new NLP PPO compilation and completed final-only assignment SFT",
+    )
     ppo.add_argument("--environment-factory", required=True, metavar="MODULE:CALLABLE")
     ppo.add_argument("--environment-config", type=Path)
-    ppo.add_argument("--updates", type=int, required=True,
-                     help="total update target, including updates restored from checkpoint")
+    ppo.add_argument(
+        "--updates",
+        type=int,
+        required=True,
+        help="total update target, including updates restored from checkpoint",
+    )
     ppo.add_argument("--max-episode-steps", type=int, default=8)
     ppo.add_argument("--max-new-tokens", type=int, default=512)
     ppo.add_argument("--temperature", type=float, default=1.0)
@@ -259,8 +301,11 @@ def build_parser() -> argparse.ArgumentParser:
     ppo.add_argument("--kl-coefficient", type=float, default=0.02)
     ppo.add_argument("--entropy-coefficient", type=float, default=0.0)
     ppo.add_argument("--value-learning-rate", type=float, default=1e-6)
-    ppo.add_argument("--require-cuda", action="store_true",
-                     help="fail before model loading if this GPU job has no CUDA device")
+    ppo.add_argument(
+        "--require-cuda",
+        action="store_true",
+        help="fail before model loading if this GPU job has no CUDA device",
+    )
     smoke = commands.add_parser("smoke", help="GPU adapter save/reload generation check")
     smoke.add_argument("--adapter-checkpoint", type=Path, required=True)
     smoke.add_argument("--output", type=Path, required=True)
@@ -285,17 +330,81 @@ def _environment(specification: str, config_path: Path | None):
             raise ValueError("environment config must be a JSON object")
     environment = factory(config)
     if not callable(getattr(environment, "reset", None)) or not callable(
-            getattr(environment, "step", None)):
+        getattr(environment, "step", None)
+    ):
         raise TypeError("environment must provide reset and step")
     return environment
 
 
+def _assignment_ppo_preflight(args, provenance):
+    if args.environment_factory != "agent.training.environment:create_training_environment":
+        raise ValueError("assignment PPO requires the audited train-only NLP environment")
+    if args.environment_config is None or not args.environment_config.is_file():
+        raise ValueError("assignment PPO requires a newly compiled environment config")
+    config = json.loads(args.environment_config.read_text())
+    if not isinstance(config.get("protocol_path"), str):
+        raise ValueError("old PPO rows are unsupported here; compile new train-only NLP inputs")
+    protocol = json.loads(Path(config["protocol_path"]).read_text())
+    expected = content_hash(
+        {key: value for key, value in protocol.items() if key != "protocol_hash"}
+    )
+    if (
+        protocol.get("version") != "final-decision-nlp-v1"
+        or protocol.get("protocol_hash") != expected
+    ):
+        raise ValueError("assignment PPO requires newly compiled final-decision NLP episodes")
+    if args.prompt_version != "final-decision-nlp-v1":
+        raise ValueError("PPO prompt_version must declare its final-decision-only training scope")
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("method") != "sft"
+        or provenance.get("model_name") != MODEL_NAME
+        or provenance.get("model_revision") != MODEL_REVISION
+        or provenance.get("tokenizer_revision") != MODEL_REVISION
+        or provenance.get("supervision_mode") != "trajectory-final"
+        or provenance.get("status") != "completed"
+        or not isinstance(provenance.get("completed_steps"), int)
+        or provenance["completed_steps"] < provenance.get("planned_steps", float("inf"))
+        or not isinstance(provenance.get("trainable_parameter_fraction"), (int, float))
+        or not 0 < provenance["trainable_parameter_fraction"] < 0.001
+        or protocol.get("sft_dataset_hash") not in provenance.get("data_hashes", ())
+        or not provenance.get("inference_weights_verified")
+    ):
+        raise ValueError("PPO requires a complete matching final-only assignment SFT adapter")
+    if (
+        protocol.get("max_length") != args.max_length
+        or protocol.get("reserved_output_tokens") != args.max_new_tokens
+    ):
+        raise ValueError("PPO training context budget differs from its compiled protocol")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    for name in ("train", "validation"):
+        path = getattr(args, name, None)
+        if path is not None:
+            prep = path.resolve().parent.parent / "preparation-manifest.json"
+            if (
+                prep.is_file()
+                and json.loads(prep.read_text()).get("old_training_targets_usable") is False
+            ):
+                raise ValueError(
+                    "source retains stale training labels; use the new GOOD trajectory export"
+                )
+    assignment = (args.method == "sft" and args.supervision == "trajectory-final") or (
+        args.method == "ppo" and args.require_assignment_sft
+    )
+    if assignment and (
+        args.model_revision != MODEL_REVISION or args.tokenizer_revision != MODEL_REVISION
+    ):
+        raise ValueError("assignment training requires the pinned model and tokenizer revision")
     if args.method == "smoke":
         result = smoke_test_adapter(
-            args.adapter_checkpoint, output_dir=args.output, prompt=args.prompt,
-            model_revision=args.model_revision, tokenizer_revision=args.tokenizer_revision,
+            args.adapter_checkpoint,
+            output_dir=args.output,
+            prompt=args.prompt,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
             max_new_tokens=args.max_new_tokens,
         )
         print(json.dumps(dict(result), sort_keys=True))
@@ -305,7 +414,8 @@ def main(argv: list[str] | None = None) -> int:
         if status_path.is_file():
             status = json.loads(status_path.read_text(encoding="utf-8"))
             if status.get("status") == "stopped" and status.get("reason") in {
-                "invalid_proposals", "reference_kl",
+                "invalid_proposals",
+                "reference_kl",
             }:
                 raise ValueError("PPO pilot failed a safety gate; review before a new experiment")
         if args.resume_from_checkpoint is None and any(
@@ -313,24 +423,32 @@ def main(argv: list[str] | None = None) -> int:
             for name in ("ppo_state.json", "ppo_run.json", "training_manifest.json")
         ):
             raise ValueError(
-                "PPO output contains an existing run; resume explicitly or use a new path")
+                "PPO output contains an existing run; resume explicitly or use a new path"
+            )
         if args.resume_from_checkpoint is not None:
             checkpoint = Path(args.resume_from_checkpoint)
             metadata = json.loads((checkpoint / "ppo_state.json").read_text(encoding="utf-8"))
             if metadata.get("implementation_version") != PPO_IMPLEMENTATION_VERSION:
                 raise ValueError(
-                    "legacy PPO checkpoint cannot resume corrected PPO; start from SFT")
+                    "legacy PPO checkpoint cannot resume corrected PPO; start from SFT"
+                )
             if metadata.get("tensor_state_sha256") != _file_hash(checkpoint / "ppo_state.pt"):
                 raise ValueError("PPO checkpoint tensor checksum failed before model loading")
-            if (metadata.get("model_name") != MODEL_NAME
-                    or metadata.get("model_revision") != args.model_revision
-                    or metadata.get("tokenizer_revision") != args.tokenizer_revision):
+            if (
+                metadata.get("model_name") != MODEL_NAME
+                or metadata.get("model_revision") != args.model_revision
+                or metadata.get("tokenizer_revision") != args.tokenizer_revision
+            ):
                 raise ValueError(
-                    "PPO checkpoint model/tokenizer identity differs from requested policy")
-            for name, key in (("adapter", "adapter_hash"),
-                              ("reference_adapter", "reference_adapter_hash")):
-                if (not (checkpoint / name).is_dir()
-                        or _path_hash(checkpoint / name) != metadata.get(key)):
+                    "PPO checkpoint model/tokenizer identity differs from requested policy"
+                )
+            for name, key in (
+                ("adapter", "adapter_hash"),
+                ("reference_adapter", "reference_adapter_hash"),
+            ):
+                if not (checkpoint / name).is_dir() or _path_hash(
+                    checkpoint / name
+                ) != metadata.get(key):
                     raise ValueError("PPO adapter checksum failed before model loading")
             restored = metadata.get("update_index")
             if type(restored) is not int or not 0 <= restored <= args.updates:
@@ -339,52 +457,80 @@ def main(argv: list[str] | None = None) -> int:
             args.reference_adapter_checkpoint = checkpoint / "reference_adapter"
         elif args.adapter_checkpoint is None:
             raise ValueError("PPO requires --adapter-checkpoint from SFT")
+        if args.require_assignment_sft:
+            provenance = (
+                metadata.get("run_contract", {}).get("initial_sft")
+                if args.resume_from_checkpoint is not None
+                else initial_sft_provenance(args.adapter_checkpoint)
+            )
+            _assignment_ppo_preflight(args, provenance)
         args.max_steps = args.updates
         settings = _settings(args, _actual_data_hashes(args))
         ppo_settings = QwenPPOSettings(
             max_episode_steps=args.max_episode_steps,
-            max_new_tokens=args.max_new_tokens, temperature=args.temperature,
-            top_p=args.top_p, epochs_per_rollout=args.ppo_epochs,
-            rollout_episodes=args.rollout_episodes, stats_chunk_size=args.stats_chunk_size,
-            target_kl=args.target_kl, max_invalid_fraction=args.max_invalid_fraction,
-            kl_coefficient=args.kl_coefficient, entropy_coefficient=args.entropy_coefficient,
+            max_new_tokens=args.max_new_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            epochs_per_rollout=args.ppo_epochs,
+            rollout_episodes=args.rollout_episodes,
+            stats_chunk_size=args.stats_chunk_size,
+            target_kl=args.target_kl,
+            max_invalid_fraction=args.max_invalid_fraction,
+            kl_coefficient=args.kl_coefficient,
+            entropy_coefficient=args.entropy_coefficient,
             value_learning_rate=args.value_learning_rate,
         )
         if args.resume_from_checkpoint is not None:
             stored = metadata.get("run_contract")
-            if (not isinstance(stored, dict)
-                    or content_hash(stored) != metadata.get("run_fingerprint")):
+            if not isinstance(stored, dict) or content_hash(stored) != metadata.get(
+                "run_fingerprint"
+            ):
                 raise ValueError(
-                    "PPO checkpoint run-contract fingerprint failed before model loading")
+                    "PPO checkpoint run-contract fingerprint failed before model loading"
+                )
             expected = {
                 "model_revision": settings.model_revision,
                 "tokenizer_revision": settings.tokenizer_revision,
-                "prompt_version": settings.prompt_version, "data_hashes": settings.data_hashes,
-                "seed": settings.seed, "learning_rate": settings.learning_rate,
-                "max_length": settings.max_length, "bf16": settings.bf16,
+                "prompt_version": settings.prompt_version,
+                "data_hashes": settings.data_hashes,
+                "seed": settings.seed,
+                "learning_rate": settings.learning_rate,
+                "max_length": settings.max_length,
+                "bf16": settings.bf16,
                 "gradient_checkpointing": settings.gradient_checkpointing,
                 "ppo": asdict(ppo_settings),
             }
-            if any(canonical_json(stored.get(key)) != canonical_json(value)
-                   for key, value in expected.items()):
+            if any(
+                canonical_json(stored.get(key)) != canonical_json(value)
+                for key, value in expected.items()
+            ):
                 raise ValueError("PPO resume contract changed; use the original data and settings")
-        limits = PPOTrainingLimits(max_seconds=args.max_seconds,
-                                   invalid_patience=args.invalid_patience)
+        limits = PPOTrainingLimits(
+            max_seconds=args.max_seconds, invalid_patience=args.invalid_patience
+        )
         # Parse every replay row and verify visibility before allocating Qwen.
         environment = _environment(args.environment_factory, args.environment_config)
         from .validation import preflight_ppo_context
+
         stack = resolve_training_stack("ppo")
-        if (args.resume_from_checkpoint is not None
-                and stored.get("package_versions") != stack["versions"]):
+        if (
+            args.resume_from_checkpoint is not None
+            and stored.get("package_versions") != stack["versions"]
+        ):
             raise ValueError("PPO dependency versions changed; restore the original training stack")
         if args.require_cuda and not stack["modules"]["torch"].cuda.is_available():
             raise ValueError("CUDA is unavailable; refusing CPU training in the GPU job")
         tokenizer = stack["modules"]["transformers"].AutoTokenizer.from_pretrained(
-            MODEL_NAME, revision=settings.tokenizer_revision,
+            MODEL_NAME,
+            revision=settings.tokenizer_revision,
             trust_remote_code=False,
         )
-        preflight_ppo_context(environment, tokenizer, max_length=settings.max_length,
-                              max_new_tokens=ppo_settings.max_new_tokens)
+        preflight_ppo_context(
+            environment,
+            tokenizer,
+            max_length=settings.max_length,
+            max_new_tokens=ppo_settings.max_new_tokens,
+        )
         if _actual_data_hashes(args) != settings.data_hashes:
             raise ValueError("PPO data changed during preflight; finish transfer before training")
         for adapter in (settings.adapter_checkpoint, settings.reference_adapter_checkpoint):
@@ -395,38 +541,50 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("PPO requires a complete saved adapter before model loading")
             if adapter is not None:
                 from safetensors import safe_open
+
                 try:
-                    with safe_open(str(adapter / "adapter_model.safetensors"),
-                                   framework="pt", device="cpu") as weights:
+                    with safe_open(
+                        str(adapter / "adapter_model.safetensors"), framework="pt", device="cpu"
+                    ) as weights:
                         if not list(weights.keys()):
                             raise ValueError("adapter has no tensors")
                 except Exception as exc:
                     raise ValueError("PPO adapter tensors are incomplete or invalid") from exc
-        if (args.resume_from_checkpoint is None
-                and settings.reference_adapter_checkpoint is not None
-                and _path_hash(settings.adapter_checkpoint)
-                != _path_hash(settings.reference_adapter_checkpoint)):
+        if (
+            args.resume_from_checkpoint is None
+            and settings.reference_adapter_checkpoint is not None
+            and _path_hash(settings.adapter_checkpoint)
+            != _path_hash(settings.reference_adapter_checkpoint)
+        ):
             raise ValueError("fresh PPO policy and frozen reference must use the same SFT adapter")
         adapter_input_hashes = {
             path: _path_hash(path)
             for path in (settings.adapter_checkpoint, settings.reference_adapter_checkpoint)
             if path is not None
         }
-        optimizer = QwenPPOOptimizer.from_pretrained(
-            settings=settings, ppo=ppo_settings)
+        optimizer = QwenPPOOptimizer.from_pretrained(settings=settings, ppo=ppo_settings)
         if any(_path_hash(path) != digest for path, digest in adapter_input_hashes.items()):
             raise ValueError("PPO adapter changed during loading; finish transfer before training")
         result = train_ppo(
-            environment, optimizer,
-            settings=settings, updates=args.updates,
+            environment,
+            optimizer,
+            settings=settings,
+            updates=args.updates,
             package_versions=stack["versions"],
             limits=limits,
         )
-        print(json.dumps({
-            "method": result.method, "output_dir": result.output_dir,
-            "manifest_hash": result.manifest_hash, "metrics": dict(result.metrics),
-            "elapsed_seconds": result.elapsed_seconds,
-        }, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "method": result.method,
+                    "output_dir": result.output_dir,
+                    "manifest_hash": result.manifest_hash,
+                    "metrics": dict(result.metrics),
+                    "elapsed_seconds": result.elapsed_seconds,
+                },
+                sort_keys=True,
+            )
+        )
         return 0 if result.metrics.get("status") == "completed" else 2
     train_rows = _jsonl(args.train)
     validation_rows = _jsonl(args.validation) if args.validation else []
@@ -435,68 +593,118 @@ def main(argv: list[str] | None = None) -> int:
         if args.validation is None:
             raise ValueError("SFT requires --validation")
         dataset_hash = _verify_sft_manifest(
-            args.train, args.validation, train_rows, validation_rows)
+            args.train, args.validation, train_rows, validation_rows
+        )
         from .validation import validate_sft_targets
-        validate_sft_targets([
-            _episode_example(row) for row in (*train_rows, *validation_rows)
-        ])
+
+        validate_sft_targets([_episode_example(row) for row in (*train_rows, *validation_rows)])
         from agent.datasets import load_dataset_artifact
+
         verified = load_dataset_artifact(args.train.parent)
         if verified.manifest.dataset_hash != dataset_hash:
             raise ValueError("SFT artifact identity changed during preflight")
-        has_trajectory = any(message.get("role") == "assistant"
-                             for row in (*train_rows, *validation_rows)
-                             for message in row["messages"])
-        if has_trajectory != (args.supervision == "trajectory"):
+        has_trajectory = any(
+            message.get("role") == "assistant"
+            for row in (*train_rows, *validation_rows)
+            for message in row["messages"]
+        )
+        if has_trajectory != (args.supervision in {"trajectory", "trajectory-final"}):
             raise ValueError(
-                "SFT supervision mode must match the dataset's actual tool trajectories")
-        if args.supervision == "trajectory":
+                "SFT supervision mode must match the dataset's actual tool trajectories"
+            )
+        if args.supervision in {"trajectory", "trajectory-final"}:
             trajectory_path = args.train.parent.parent / "trajectory-manifest.json"
             if not trajectory_path.exists():
                 raise ValueError("trajectory SFT requires its collection/export manifest")
             trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
-            if (trajectory.get("dataset_hash") != dataset_hash
-                    or trajectory.get("supervision_mode") != "trajectory"
-                    or trajectory.get("test_policy_calls") != 0):
+            if (
+                trajectory.get("dataset_hash") != dataset_hash
+                or trajectory.get("supervision_mode") != args.supervision
+                or trajectory.get("test_policy_calls") != 0
+            ):
                 raise ValueError("trajectory export manifest does not match this dataset")
         data_hashes = tuple(dict.fromkeys((dataset_hash, *data_hashes)))
     settings = _settings(args, data_hashes)
     if args.method == "sft" and args.preflight_only:
         from agent.policy.loader import HuggingFaceQwenBackend
 
-        from .core import build_sft_example, build_trajectory_sft_example
+        from .core import (
+            build_final_trajectory_sft_example,
+            build_sft_example,
+            build_trajectory_sft_example,
+        )
+
         backend = HuggingFaceQwenBackend(tokenizer_revision=args.tokenizer_revision)
         backend.load_tokenizer()
-        builder = (build_trajectory_sft_example if args.supervision == "trajectory"
-                   else build_sft_example)
+        builder = {
+            "trajectory": build_trajectory_sft_example,
+            "trajectory-final": build_final_trajectory_sft_example,
+        }.get(args.supervision, build_sft_example)
         if not train_rows or not validation_rows:
             raise ValueError("SFT preflight requires nonempty train and validation")
         maximum = 0
         total = len(train_rows) + len(validation_rows)
         for row in (*train_rows, *validation_rows):
             item = _episode_example(row)
-            built = builder(item, backend._tokenizer, max_length=args.max_length,
-                            allowed_splits=(item.split,))
+            built = builder(
+                item, backend._tokenizer, max_length=args.max_length, allowed_splits=(item.split,)
+            )
             maximum = max(maximum, len(built.input_ids))
-        print(canonical_json({"event": "sft_preflight", "examples": total,
-                              "max_tokens": maximum, "supervision": args.supervision}), flush=True)
+        import math
+
+        effective_batch = args.train_batch_size * args.gradient_accumulation_steps
+        print(
+            canonical_json(
+                {
+                    "event": "sft_preflight",
+                    "examples": total,
+                    "train_examples": len(train_rows),
+                    "validation_examples": len(validation_rows),
+                    "effective_batch_size": effective_batch,
+                    "planned_example_exposures": args.max_steps * effective_batch,
+                    "planned_passes_upper_bound": args.max_steps
+                    * effective_batch
+                    / len(train_rows),
+                    "three_pass_step_recommendation": max(
+                        1, math.ceil(3 * len(train_rows) / effective_batch)
+                    ),
+                    "max_tokens": maximum,
+                    "supervision": args.supervision,
+                }
+            ),
+            flush=True,
+        )
         return 0
     if args.method == "sft":
+        if (
+            args.require_cuda
+            and not resolve_training_stack("sft")["modules"]["torch"].cuda.is_available()
+        ):
+            raise ValueError("CUDA is unavailable; refusing CPU SFT in the GPU job")
         result = train_sft(
             [_episode_example(row) for row in train_rows],
-            [_episode_example(row) for row in validation_rows], settings=settings,
+            [_episode_example(row) for row in validation_rows],
+            settings=settings,
         )
     else:
         result = train_dpo(
             [_audited_dpo_pair(row, "train") for row in train_rows],
             [_audited_dpo_pair(row, "validation") for row in validation_rows],
-            settings=settings, beta=args.beta,
+            settings=settings,
+            beta=args.beta,
         )
-    print(json.dumps({
-        "method": result.method, "output_dir": result.output_dir,
-        "manifest_hash": result.manifest_hash, "metrics": dict(result.metrics),
-        "elapsed_seconds": result.elapsed_seconds,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "method": result.method,
+                "output_dir": result.output_dir,
+                "manifest_hash": result.manifest_hash,
+                "metrics": dict(result.metrics),
+                "elapsed_seconds": result.elapsed_seconds,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

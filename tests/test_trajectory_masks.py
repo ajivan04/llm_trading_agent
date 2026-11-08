@@ -52,23 +52,29 @@ class TrajectoryMaskTests(unittest.TestCase):
 class PinnedTokenizerMaskTests(unittest.TestCase):
     def test_cached_qwen_native_template_masks_provider_text(self):
         from agent.training.core import MODEL_NAME, MODEL_REVISION
+
         try:
             from transformers import AutoTokenizer
+
             tokenizer = AutoTokenizer.from_pretrained(
-                MODEL_NAME, revision=MODEL_REVISION, local_files_only=True)
+                MODEL_NAME, revision=MODEL_REVISION, local_files_only=True
+            )
         except (ImportError, OSError):
-            self.skipTest('pinned Qwen tokenizer not cached; cluster preflight is mandatory')
+            self.skipTest("pinned Qwen tokenizer not cached; cluster preflight is mandatory")
         request = '{"tool":"get_rsi","arguments":{"symbol":"AAPL"}}'
-        item = dataclasses.replace(episode(), messages=(
-            {'role': 'system', 'content': 'RULES'},
-            {'role': 'user', 'content': 'ACCOUNT'},
-            {'role': 'assistant', 'content': request},
-            {'role': 'user', 'content': 'PRIVATE_PROVIDER_TEXT'},
-        ))
+        item = dataclasses.replace(
+            episode(),
+            messages=(
+                {"role": "system", "content": "RULES"},
+                {"role": "user", "content": "ACCOUNT"},
+                {"role": "assistant", "content": request},
+                {"role": "user", "content": "PRIVATE_PROVIDER_TEXT"},
+            ),
+        )
         built = build_trajectory_sft_example(item, tokenizer, max_length=4096)
         learned = tokenizer.decode([x for x in built.labels if x != -100])
-        self.assertEqual(learned, request + '<|im_end|>\n' + item.completion + '<|im_end|>\n')
-        self.assertNotIn('PRIVATE_PROVIDER_TEXT', learned)
+        self.assertEqual(learned, request + "<|im_end|>\n" + item.completion + "<|im_end|>\n")
+        self.assertNotIn("PRIVATE_PROVIDER_TEXT", learned)
 
 
 class PreallocationTests(unittest.TestCase):
@@ -79,10 +85,50 @@ class PreallocationTests(unittest.TestCase):
 
         from agent.training.execution import TrainerSettings, train_sft
         from tests.test_training_execution import FakeModel, example, stack
+
         with tempfile.TemporaryDirectory() as root:
             settings = TrainerSettings(Path(root), "test", ("data",), max_length=1)
             with patch.object(FakeModel, "from_pretrained") as load:
                 with self.assertRaisesRegex(ValueError, "max_length"):
-                    train_sft([example("train")], [example("validation")],
-                              settings=settings, stack_resolver=stack)
+                    train_sft(
+                        [example("train")],
+                        [example("validation")],
+                        settings=settings,
+                        stack_resolver=stack,
+                    )
                 load.assert_not_called()
+
+
+class PinnedFinalMaskTests(unittest.TestCase):
+    def test_cached_qwen_masks_tool_requests_as_context_in_final_protocol(self):
+        from agent.training.core import (
+            MODEL_NAME,
+            MODEL_REVISION,
+            build_final_trajectory_sft_example,
+        )
+
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                MODEL_NAME, revision=MODEL_REVISION, local_files_only=True
+            )
+        except (ImportError, OSError):
+            self.skipTest(
+                "pinned tokenizer not cached; explicit cluster preflight remains required"
+            )
+        request = '{"tool":"get_rsi","arguments":{"symbol":"AAPL"}}'
+        item = dataclasses.replace(
+            episode(),
+            messages=(
+                {"role": "system", "content": "RULES"},
+                {"role": "user", "content": "ACCOUNT"},
+                {"role": "assistant", "content": request},
+                {"role": "user", "content": "PROVIDER_TEXT"},
+            ),
+        )
+        built = build_final_trajectory_sft_example(item, tokenizer, max_length=4096)
+        learned = tokenizer.decode([x for x in built.labels if x != -100])
+        self.assertEqual(learned, item.completion + "<|im_end|>\n")
+        self.assertNotIn("get_rsi", learned)
+        self.assertNotIn("PROVIDER_TEXT", learned)

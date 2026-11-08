@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 POLICY_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 POLICY_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+
+
+ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
+
+
+def adapter_fingerprint(path: Path) -> str:
+    """Inference identity excludes mutable optimizer state and checkpoint folders."""
+    path = Path(path)
+    if not (path / "adapter_config.json").is_file() or not any(
+        (path / name).is_file() for name in ADAPTER_FILES[1:]
+    ):
+        raise ValueError("adapter requires complete PEFT config and weights")
+    digest = hashlib.sha256()
+    for name in sorted(ADAPTER_FILES):
+        item = path / name
+        if item.is_file():
+            if item.is_symlink():
+                raise ValueError("adapter inference files must not be symlinks")
+            digest.update(name.encode())
+            with item.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return digest.hexdigest()
 
 
 class HuggingFaceQwenBackend:
@@ -40,12 +64,10 @@ class HuggingFaceQwenBackend:
 
     @property
     def policy_identity(self) -> dict[str, str]:
-        from agent.training.execution import _path_hash
-
         return {
             "model_name": self.model_name,
             "model_revision": self.revision,
-            "adapter_hash": _path_hash(self.adapter) if self.adapter else "base-model",
+            "adapter_hash": adapter_fingerprint(self.adapter) if self.adapter else "base-model",
         }
 
     def load_tokenizer(self) -> None:

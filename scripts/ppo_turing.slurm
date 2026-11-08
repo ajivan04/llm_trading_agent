@@ -15,7 +15,7 @@
 
 set -Eeuo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
-PREPARED_ROOT="${PREPARED_ROOT:?Set PREPARED_ROOT to the repaired prepared artifact}"
+PREPARED_ROOT="${PREPARED_ROOT:?Set PREPARED_ROOT to the NEW compiled train-only NLP PPO artifact}"
 SFT_ADAPTER="${SFT_ADAPTER:?Set SFT_ADAPTER to the chosen complete SFT adapter}"
 PPO_OUTPUT_ROOT="${PPO_OUTPUT_ROOT:?Set PPO_OUTPUT_ROOT to a new PPO-v2 experiment directory}"
 cd "$PROJECT_ROOT"
@@ -37,11 +37,11 @@ if [[ -n "${PPO_RESUME_FROM:-}" ]]; then
 fi
 
 "$PYTHON" -m agent.training.cli ppo \
-  --require-cuda \
+  --require-cuda --require-assignment-sft \
   --environment-factory agent.training.environment:create_training_environment \
   --environment-config "$PREPARED_ROOT/ppo-environment.json" \
   --output "$PPO_OUTPUT_ROOT" \
-  --prompt-version "${PROMPT_VERSION:-v2-visible-evidence}" \
+  --prompt-version "${PROMPT_VERSION:-final-decision-nlp-v1}" \
   --max-length "${MAX_LENGTH:-4096}" \
   --max-new-tokens "${PPO_MAX_NEW_TOKENS:-512}" \
   --updates "${PPO_UPDATES:-2}" \

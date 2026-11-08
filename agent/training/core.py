@@ -254,6 +254,28 @@ def build_trajectory_sft_example(
     return SFTExample(example.example_id, ids, attention, tuple(labels), supervised)
 
 
+def build_final_trajectory_sft_example(
+    example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    allowed_splits: tuple[str, ...] = ("train",),
+) -> SFTExample:
+    """Notebook protocol: complete research history is context; only final output learns."""
+    built = build_trajectory_sft_example(example, tokenizer, max_length=max_length,
+                                         allowed_splits=allowed_splits)
+    prefix = tokenizer.apply_chat_template(
+        example.messages, tokenize=True, add_generation_prompt=True,
+        return_dict=True, truncation=False)
+    if not isinstance(prefix, Mapping):
+        raise TypeError("native chat template must return a mapping")
+    ids = tuple(int(x) for x in prefix.get("input_ids", ()))
+    if not ids or built.input_ids[:len(ids)] != ids or len(ids) >= len(built.input_ids):
+        raise ValueError("unable to derive exact final assistant token span")
+    labels = (-100,) * len(ids) + built.labels[len(ids):]
+    supervised = sum(x != -100 for x in labels)
+    if not supervised:
+        raise ValueError("trajectory has no supervised final assistant tokens")
+    return SFTExample(built.example_id, built.input_ids, built.attention_mask, labels, supervised)
+
+
 @dataclass(frozen=True)
 class DPOCandidate:
     candidate_id: str
