@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -102,7 +102,8 @@ class ResearchPolicy:
                 "code": code,
                 "tokenizer_revision": getattr(self.backend, "tokenizer_revision", None),
                 "candidate_rule": (
-                    "absolute trailing five-session split-aware close return, held symbols first"
+                    "held symbols, market-news mentions, then absolute trailing "
+                    "five-session split-aware return"
                 ),
                 "decoding": "greedy strict final JSON; no post-hoc schema repair",
             }
@@ -130,7 +131,15 @@ class ResearchPolicy:
 
         ranked = sorted(prices, key=score)
         held = [symbol for symbol in ranked if state.get("positions", {}).get(symbol, 0) > 0]
-        candidates = [*held, *[symbol for symbol in ranked if symbol not in held]]
+        mentions = Counter(
+            symbol
+            for item in extras
+            if item.source in {"alpaca.news", "alpha_vantage.news"}
+            for symbol in set(item.values.get("symbols", ()))
+            if symbol in prices
+        )
+        discovered = sorted(mentions, key=lambda symbol: (-mentions[symbol], symbol))
+        candidates = list(dict.fromkeys([*held, *discovered, *ranked]))
         candidates = candidates[: self.settings.max_research_symbols]
         selected = []
         for symbol in candidates:

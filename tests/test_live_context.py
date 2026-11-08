@@ -62,6 +62,11 @@ class LiveContextTests(unittest.TestCase):
                 def _bars(self, *_):
                     return (live,), False
 
+                def search_market_news(self, **_kwargs):
+                    return json.dumps(
+                        {"status": "missing", "evidence": [], "candidate_symbols": []}
+                    )
+
                 def get_news_for_symbols(self, *_args, **_kwargs):
                     return json.dumps({"status": "missing", "evidence": []})
 

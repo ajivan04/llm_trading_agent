@@ -75,10 +75,19 @@ class LiveResearchSeed:
 
         ranked = sorted(prices, key=rank)
         held = [s for s in universe if state.positions.get(s, 0)]
-        selected = tuple(dict.fromkeys([*held, *ranked]))[: self.max_symbols]
-        self.status = {"candidate_symbols": selected, "budget": self.max_symbols}
         cutoff = self.clock().isoformat()
         with self.tools_factory(cutoff, universe, cache_path=self.cache_path) as tools:
+            market = json.loads(tools.search_market_news(limit=20))
+            discovered = [s for s in market.get("candidate_symbols", ()) if s in universe]
+            selected = tuple(dict.fromkeys([*held, *discovered, *ranked]))[: self.max_symbols]
+            self.status = {
+                "candidate_symbols": selected,
+                "budget": self.max_symbols,
+                "market_news": market["status"],
+            }
+            for row in market.get("evidence", ()):
+                item = Evidence(**row)
+                self.records[item.id] = item
             if selected:
                 news = json.loads(tools.get_news_for_symbols(selected, limit=8))
                 self.status["news"] = news["status"]

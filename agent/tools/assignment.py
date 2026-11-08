@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from html import unescape
@@ -80,6 +83,7 @@ class AssignmentTools:
         av_request: Callable | None = None,
         price_request: Callable | None = None,
         news_request: Callable | None = None,
+        market_news_request: Callable | None = None,
         sec_request: Callable | None = None,
         clock: Callable = lambda: datetime.now(UTC),
         av_api_key: str = "",
@@ -119,6 +123,7 @@ class AssignmentTools:
         self._av_request = av_request or self._default_av_request
         self._price_request = price_request or self._default_price_request
         self._news_request = news_request or self._default_news_request
+        self._market_news_request = market_news_request or self._default_market_news_request
         self._sec_request = sec_request or self._default_sec_request
         self._session_close = session_close
         self._calendar = None
@@ -223,14 +228,17 @@ class AssignmentTools:
             }
         )
 
-    def _cached(self, operation, symbols, params, fetch, *, ttl=timedelta(hours=24)):
+    def _cached(
+        self, operation, symbols, params, fetch, *, ttl=timedelta(hours=24), market_wide=False
+    ):
         params = dict(params)
         if self.mode == "historical":
             params["historical_evidence_hash"] = content_hash(
                 tuple(
                     self._redact(item.to_dict())
                     for item in self.evidence
-                    if item.symbol in symbols and item.eligible(self.as_of)
+                    if (item.symbol in symbols or (market_wide and item.symbol is None))
+                    and item.eligible(self.as_of)
                 )
             )
         identity = CacheIdentity(
@@ -247,13 +255,19 @@ class AssignmentTools:
         cached = self.cache.get(identity, now=self._now())
         if cached is not None:
             records = tuple(Evidence(**item) for item in cached)
-            if any(item.symbol not in symbols for item in records):
+            if any(
+                item.symbol not in symbols and not (market_wide and item.symbol is None)
+                for item in records
+            ):
                 raise ValueError("cache returned evidence outside requested symbols")
             return records, True
         records = tuple(fetch())
         if any(not isinstance(item, Evidence) for item in records):
             raise ValueError("provider must return normalized evidence")
-        if any(item.symbol not in symbols for item in records):
+        if any(
+            item.symbol not in symbols and not (market_wide and item.symbol is None)
+            for item in records
+        ):
             raise ValueError("provider returned evidence outside the requested universe")
         # Never persist raw provider error messages or credentials.
         payload = [self._redact(item.to_dict()) for item in records]
@@ -331,6 +345,93 @@ class AssignmentTools:
             values=values,
             transformation_version="assignment-tools-v1",
         )
+
+    def search_market_news(self, topic: str = "", limit: int = 10) -> str:
+        """Discover whitelist tickers from news; never mutate the trading universe."""
+        if (
+            not isinstance(topic, str)
+            or len(topic) > 80
+            or type(limit) is not int
+            or not 1 <= limit <= 50
+        ):
+            raise ValueError("market news needs a short topic and limit 1..50")
+        cutoff = parse_timestamp(self.as_of)
+        start = cutoff - timedelta(days=self.news_lookback_days)
+
+        def fetch():
+            if self.mode == "live":
+                return self._market_news_request(
+                    time_from=start,
+                    time_to=cutoff,
+                    as_of=cutoff,
+                    retrieved_at=self._now(),
+                    limit=50,
+                    latest_only=True,
+                )
+            # Existing archives were collected for the fixed whitelist. This is
+            # archive-wide discovery, not a claim of a complete historic market feed.
+            grouped = {}
+            for item in self.evidence:
+                if (
+                    item.source not in _NEWS
+                    or not item.eligible(cutoff)
+                    or not start <= parse_timestamp(item.observed_at) <= cutoff
+                ):
+                    continue
+                key = (
+                    item.raw_content_hash or content_hash((item.url, item.text)),
+                    item.observed_at,
+                    item.available_at,
+                )
+                group = grouped.setdefault(key, [item, set()])
+                group[1].update(item.values.get("symbols", ()))
+                if item.symbol:
+                    group[1].add(item.symbol)
+            return tuple(
+                replace(
+                    item,
+                    id="market-news:" + content_hash(key)[:24],
+                    symbol=None,
+                    values={**item.values, "symbols": sorted(symbols)},
+                    transformation_version="archive-market-news-v1",
+                )
+                for key, (item, symbols) in grouped.items()
+            )
+
+        try:
+            items, hit = self._cached("market-news", self.universe, {}, fetch, market_wide=True)
+            terms = set(re.findall(r"\w+", topic.casefold()))
+            articles = sorted(
+                (
+                    item
+                    for item in items
+                    if item.eligible(cutoff)
+                    and start <= parse_timestamp(item.observed_at) <= cutoff
+                    and (not terms or terms & set(re.findall(r"\w+", item.text.casefold())))
+                ),
+                key=lambda item: (item.available_at, item.id),
+                reverse=True,
+            )[:limit]
+            mentions = Counter(
+                symbol
+                for item in articles
+                for symbol in set(item.values.get("symbols", ()))
+                if symbol in self.universe
+            )
+            return self._output(
+                "alpaca.news",
+                articles,
+                cache_hit=hit,
+                candidate_symbols=[
+                    s for s, _ in sorted(mentions.items(), key=lambda pair: (-pair[1], pair[0]))
+                ],
+                coverage="market-wide" if self.mode == "live" else "archived-whitelist-news",
+                topic=topic,
+            )
+        except Exception:
+            return self._output(
+                "alpaca.news", status="provider_error", error="market_news_unavailable"
+            )
 
     def get_news_for_symbols(self, symbols, limit=5, date=None) -> str:
         normalized = self._symbols(symbols)
@@ -632,6 +733,12 @@ class AssignmentTools:
             raise ValueError("tool registry cutoff differs from tools cutoff")
         specifications = (
             (
+                "search_market_news",
+                "Discover allowed tickers from market headlines; optional topic keyword",
+                {"topic": "string", "limit": "integer"},
+                (),
+            ),
+            (
                 "get_news_for_symbols",
                 "Alpaca news text; no provider sentiment scores",
                 {"symbols": "array", "limit": "integer", "date": "string"},
@@ -687,6 +794,11 @@ class AssignmentTools:
         url = "https://www.alphavantage.co/query?" + urlencode({**params, "apikey": self._av_key})
         with urlopen(url, timeout=30) as response:  # noqa: S310 - fixed HTTPS host
             return json.loads(response.read().decode("utf-8"))
+
+    def _default_market_news_request(self, **kwargs):
+        from agent.data.news import AlpacaNewsAdapter
+
+        return AlpacaNewsAdapter(self._alpaca_key, self._alpaca_secret).fetch_market(**kwargs)
 
     def _default_news_request(self, symbols, **kwargs):
         from agent.data.news import AlpacaNewsAdapter

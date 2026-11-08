@@ -1,4 +1,5 @@
 """Point-in-time Alpha Vantage news ingestion and deterministic aggregation."""
+
 from __future__ import annotations
 
 import json
@@ -58,7 +59,8 @@ def canonicalize_url(value: Any) -> str:
     if parts.scheme.lower() not in {"http", "https"} or not parts.netloc:
         raise ValueError("news item url must be HTTP(S)")
     query = [
-        (key, item) for key, item in parse_qsl(parts.query, keep_blank_values=True)
+        (key, item)
+        for key, item in parse_qsl(parts.query, keep_blank_values=True)
         if not key.lower().startswith("utm_")
     ]
     host = (parts.hostname or "").lower()
@@ -142,18 +144,25 @@ class AlphaVantageNewsAdapter:
         return tuple(result)
 
     def _complete_feed(
-        self, symbol: str, start: datetime, end: datetime, limit: int,
-        *, depth: int = 0,
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+        *,
+        depth: int = 0,
     ) -> list[Mapping[str, Any]]:
-        payload = self._request({
-            "function": "NEWS_SENTIMENT",
-            "tickers": symbol,
-            "time_from": _query_time(start),
-            "time_to": _query_time(end),
-            "sort": "EARLIEST",
-            "limit": str(limit),
-            "apikey": self._api_key,
-        })
+        payload = self._request(
+            {
+                "function": "NEWS_SENTIMENT",
+                "tickers": symbol,
+                "time_from": _query_time(start),
+                "time_to": _query_time(end),
+                "sort": "EARLIEST",
+                "limit": str(limit),
+                "apikey": self._api_key,
+            }
+        )
         feed = list(self._validate_payload(payload))
         if len(feed) < limit:
             return feed
@@ -163,10 +172,9 @@ class AlphaVantageNewsAdapter:
         if depth >= 32 or end - start <= timedelta(minutes=1):
             raise RuntimeError("Alpha Vantage news coverage is incomplete")
         midpoint = start + (end - start) / 2
-        return (
-            self._complete_feed(symbol, start, midpoint, limit, depth=depth + 1)
-            + self._complete_feed(symbol, midpoint, end, limit, depth=depth + 1)
-        )
+        return self._complete_feed(
+            symbol, start, midpoint, limit, depth=depth + 1
+        ) + self._complete_feed(symbol, midpoint, end, limit, depth=depth + 1)
 
     @staticmethod
     def _validate_payload(payload: Any) -> Sequence[Mapping[str, Any]]:
@@ -180,11 +188,14 @@ class AlphaVantageNewsAdapter:
             raise RuntimeError("Alpha Vantage returned an invalid news feed")
         return feed
 
-
     @staticmethod
     def _normalize_item(
-        raw: Mapping[str, Any], symbol: str, start: datetime, end: datetime,
-        cutoff: datetime, retrieved: datetime,
+        raw: Mapping[str, Any],
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        cutoff: datetime,
+        retrieved: datetime,
     ) -> Evidence | None:
         published = parse_timestamp(_provider_time(raw.get("time_published")))
         if published < start or published > end or published > cutoff:
@@ -200,9 +211,9 @@ class AlphaVantageNewsAdapter:
         if not isinstance(ticker_items, list):
             raise ValueError("news item ticker_sentiment must be a list")
         matching = [
-            entry for entry in ticker_items
-            if isinstance(entry, Mapping)
-            and str(entry.get("ticker", "")).strip().upper() == symbol
+            entry
+            for entry in ticker_items
+            if isinstance(entry, Mapping) and str(entry.get("ticker", "")).strip().upper() == symbol
         ]
         if not matching:
             return None
@@ -221,15 +232,15 @@ class AlphaVantageNewsAdapter:
         for topic in raw_topics:
             if not isinstance(topic, Mapping):
                 raise ValueError("news topic must be an object")
-            topic_relevance = _finite(
-                topic.get("relevance_score"), "topic relevance_score"
-            )
+            topic_relevance = _finite(topic.get("relevance_score"), "topic relevance_score")
             if not 0 <= topic_relevance <= 1:
                 raise ValueError("news topic relevance is outside its valid range")
-            topics.append({
-                "topic": _required_text(topic.get("topic"), "topic"),
-                "relevance_score": topic_relevance,
-            })
+            topics.append(
+                {
+                    "topic": _required_text(topic.get("topic"), "topic"),
+                    "relevance_score": topic_relevance,
+                }
+            )
         values = {
             "canonical_url": canonical_url,
             "published_at": normalize_timestamp(published),
@@ -241,9 +252,9 @@ class AlphaVantageNewsAdapter:
             "sentiment_score": score,
             "sentiment_label": str(sentiment.get("ticker_sentiment_label") or "").strip(),
         }
-        values["article_content_hash"] = content_hash({
-            key: value for key, value in values.items() if key != "canonical_url"
-        })
+        values["article_content_hash"] = content_hash(
+            {key: value for key, value in values.items() if key != "canonical_url"}
+        )
         record_hash = content_hash(values)
         return Evidence(
             id=f"alpha-news:{symbol}:{published.strftime('%Y%m%dT%H%M%S')}:{record_hash[:16]}",
@@ -281,6 +292,7 @@ class AlpacaNewsAdapter:
     @staticmethod
     def _default_request(params):
         from urllib.parse import urlencode
+
         params = dict(params)
         api_key = params.pop("_api_key")
         secret_key = params.pop("_secret_key")
@@ -303,7 +315,7 @@ class AlpacaNewsAdapter:
                 try:
                     delay = min(60.0, max(1.0, float(retry_after)))
                 except (TypeError, ValueError):
-                    delay = float(2 ** attempt)
+                    delay = float(2**attempt)
                 time.sleep(delay)
             except Exception as exc:  # pragma: no cover - network dependent
                 raise RuntimeError("Alpaca news request failed") from exc
@@ -311,13 +323,29 @@ class AlpacaNewsAdapter:
             raise RuntimeError("Alpaca returned an invalid news response")
         return payload
 
-    def fetch(self, symbols, *, time_from, time_to, as_of, retrieved_at, limit=50,
-              latest_only=False):
+    def fetch(
+        self,
+        symbols,
+        *,
+        time_from,
+        time_to,
+        as_of,
+        retrieved_at,
+        limit=50,
+        latest_only=False,
+        market_wide=False,
+    ):
+        if type(market_wide) is not bool:
+            raise ValueError("market_wide must be an explicit boolean")
         if type(latest_only) is not bool:
             raise ValueError("latest_only must be an explicit boolean")
         normalized = tuple(str(symbol).strip().upper() for symbol in symbols)
-        if not normalized or len(normalized) != len(set(normalized)):
-            raise ValueError("symbols must be nonempty and unique")
+        if (
+            (market_wide and normalized)
+            or (not market_wide and not normalized)
+            or len(normalized) != len(set(normalized))
+        ):
+            raise ValueError("use unique symbols or an explicit symbol-free market query")
         if type(limit) is not int or not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
         start, end = parse_timestamp(time_from), parse_timestamp(time_to)
@@ -329,12 +357,15 @@ class AlpacaNewsAdapter:
         # below URL/provider limits while remaining far cheaper than one request
         # per ticker on Alpha Vantage.
         result = []
-        for offset in range(0, len(normalized), 25):
-            batch = normalized[offset:offset + 25]
+        batches = (
+            ((),)
+            if market_wide
+            else tuple(normalized[i : i + 25] for i in range(0, len(normalized), 25))
+        )
+        for batch in batches:
             page_token = None
             for _page in range(1000):
                 params = {
-                    "symbols": ",".join(batch),
                     "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "limit": str(min(limit, 50)),
@@ -342,6 +373,8 @@ class AlpacaNewsAdapter:
                     "_api_key": self._api_key,
                     "_secret_key": self._secret_key,
                 }
+                if batch:
+                    params["symbols"] = ",".join(batch)
                 if page_token:
                     params["page_token"] = page_token
                 payload = self._request(params)
@@ -361,15 +394,14 @@ class AlpacaNewsAdapter:
                     available = max(published, updated)
                     if published < start or published > end or available > cutoff:
                         continue
-                    article_symbols = {
-                        str(item).strip().upper() for item in raw.get("symbols", [])
-                    }
-                    for symbol in batch:
-                        if symbol not in article_symbols:
+                    article_symbols = {str(item).strip().upper() for item in raw.get("symbols", [])}
+                    for symbol in (None,) if market_wide else batch:
+                        if symbol is not None and symbol not in article_symbols:
                             continue
                         title = unescape(str(raw.get("headline") or "").strip())
-                        summary = unescape(str(
-                            raw.get("summary") or raw.get("content") or "").strip())
+                        summary = unescape(
+                            str(raw.get("summary") or raw.get("content") or "").strip()
+                        )
                         # Alpaca can return metadata-only records. They cannot
                         # provide NLP evidence, so omit them rather than failing
                         # the entire historical preparation run.
@@ -384,27 +416,39 @@ class AlpacaNewsAdapter:
                             "summary": summary,
                             "publisher": str(raw.get("source") or "Alpaca").strip(),
                             "topics": [],
+                            "symbols": sorted(article_symbols),
                             "relevance_score": 1.0,
                             "sentiment_score": None,
                             "sentiment_label": "unknown",
                         }
                         values["article_content_hash"] = content_hash(values)
                         record_hash = content_hash(values)
-                        result.append(Evidence(
-                            id=f"alpaca-news:{symbol}:{published.strftime('%Y%m%dT%H%M%S')}:{record_hash[:16]}",
-                            source="alpaca.news", symbol=symbol,
-                            observed_at=published, available_at=available,
-                            retrieved_at=retrieved, text=f"{title}\n{summary}".strip(),
-                            values=values, url=url, entitlement="alpaca",
-                            raw_content_hash=record_hash,
-                            transformation_version="alpaca-news-v2-version-availability",
-                        ))
+                        result.append(
+                            Evidence(
+                                id=f"alpaca-news:{symbol}:{published.strftime('%Y%m%dT%H%M%S')}:{record_hash[:16]}",
+                                source="alpaca.news",
+                                symbol=symbol,
+                                observed_at=published,
+                                available_at=available,
+                                retrieved_at=retrieved,
+                                text=f"{title}\n{summary}".strip(),
+                                values=values,
+                                url=url,
+                                entitlement="alpaca",
+                                raw_content_hash=record_hash,
+                                transformation_version="alpaca-news-v2-version-availability",
+                            )
+                        )
                 page_token = payload.get("next_page_token")
                 if latest_only or not page_token:
                     break
             else:
                 raise RuntimeError("Alpaca news pagination exceeded the safety limit")
         return tuple(sorted(result, key=lambda item: (item.available_at, item.id)))
+
+    def fetch_market(self, **kwargs):
+        """Fetch market-wide news without supplying the optional symbols filter."""
+        return self.fetch((), market_wide=True, **kwargs)
 
 
 class CachedNewsAdapter:
@@ -415,9 +459,14 @@ class CachedNewsAdapter:
         self.cache = cache
 
     def fetch(
-        self, symbols: Sequence[str], *, time_from: str | datetime,
-        time_to: str | datetime, as_of: str | datetime,
-        retrieved_at: str | datetime, limit: int = 50,
+        self,
+        symbols: Sequence[str],
+        *,
+        time_from: str | datetime,
+        time_to: str | datetime,
+        as_of: str | datetime,
+        retrieved_at: str | datetime,
+        limit: int = 50,
     ) -> tuple[Evidence, ...]:
         start = parse_timestamp(time_from)
         end = parse_timestamp(time_to)
@@ -440,22 +489,28 @@ class CachedNewsAdapter:
         )
         cached = self.cache.get(identity, now=retrieved_at)
         if cached is not None:
-            if (not isinstance(cached, list)
-                    or not all(isinstance(item, Mapping) for item in cached)):
+            if not isinstance(cached, list) or not all(
+                isinstance(item, Mapping) for item in cached
+            ):
                 raise ValueError("cached news payload is malformed")
             reconstructed = tuple(Evidence(**dict(item)) for item in cached)
             if all(
-                start <= parse_timestamp(item.available_at) <= end
-                and item.eligible(cutoff)
+                start <= parse_timestamp(item.available_at) <= end and item.eligible(cutoff)
                 for item in reconstructed
             ):
                 return reconstructed
         result = self.adapter.fetch(
-            symbols, time_from=time_from, time_to=time_to, as_of=as_of,
-            retrieved_at=retrieved_at, limit=limit,
+            symbols,
+            time_from=time_from,
+            time_to=time_to,
+            as_of=as_of,
+            retrieved_at=retrieved_at,
+            limit=limit,
         )
         self.cache.put(
-            identity, [item.to_dict() for item in result], fetched_at=retrieved_at,
+            identity,
+            [item.to_dict() for item in result],
+            fetched_at=retrieved_at,
             ttl=timedelta(hours=24),
         )
         return result
@@ -477,7 +532,8 @@ def aggregate_news(
         raise ValueError("retrieved_at cannot precede as_of")
     items = sorted(
         (
-            item for item in evidence
+            item
+            for item in evidence
             if item.source in {"alpha_vantage.news", "alpaca.news"}
             and item.symbol == normalized_symbol
             and item.eligible(cutoff)
@@ -502,8 +558,11 @@ def aggregate_news(
             if raw_score is not None:
                 weighted.append((relevance, _finite(raw_score, "sentiment_score")))
         total_weight = sum(weight for weight, _ in weighted)
-        mean = (sum(weight * score for weight, score in weighted) / total_weight
-                if total_weight > 0 else None)
+        mean = (
+            sum(weight * score for weight, score in weighted) / total_weight
+            if total_weight > 0
+            else None
+        )
         disagreement = None
         if mean is not None:
             disagreement = math.sqrt(
@@ -530,8 +589,11 @@ def aggregate_news(
         observed_at=available,
         available_at=available,
         retrieved_at=retrieved,
-        text=(f"No eligible news for {normalized_symbol}" if values["missing"]
-              else f"Aggregated {values['article_count']} news articles for {normalized_symbol}"),
+        text=(
+            f"No eligible news for {normalized_symbol}"
+            if values["missing"]
+            else f"Aggregated {values['article_count']} news articles for {normalized_symbol}"
+        ),
         values=values,
         raw_content_hash=digest,
         transformation_version="news-aggregate-v1",

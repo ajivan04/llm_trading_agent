@@ -22,8 +22,8 @@ _NEWS = {"alpaca.news", "alpha_vantage.news"}
 TOOL_INSTRUCTIONS = (
     "Research the supplied universe using registered tools before the final decision. "
     "Choose a relevant registered tool and return only a JSON tool request, for example "
-    '{"tool":"get_price_history","arguments":{"symbol":"AAPL","period":"5d"}}. '
-    "Replace AAPL with a relevant allowed symbol; use only a tool and parameters in the "
+    '{"tool":"search_market_news","arguments":{"limit":10}}. '
+    "Use only a tool and parameters in the "
     "supplied registry. After receiving the result, research further if needed, or return "
     "a final decision when there is enough evidence. Never change the bound decision date. "
     "A tool result may be missing or quota limited; do not invent missing information. "
