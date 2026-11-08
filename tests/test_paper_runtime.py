@@ -130,3 +130,10 @@ class PaperRuntimeTests(unittest.TestCase):
             self.run_cycle(loop, submit=True)
         self.assertEqual(self.policy.calls, 0)
         self.assertEqual(self.broker.posts, [])
+
+
+    def test_nonmapping_policy_result_is_recorded_invalid_without_orders(self):
+        loop = self.loop(policy=lambda **_: None)
+        result = self.run_cycle(loop, submit=True)
+        self.assertEqual(result['status'], 'invalid_policy')
+        self.assertEqual(self.broker.posts, [])

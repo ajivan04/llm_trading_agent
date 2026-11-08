@@ -1,23 +1,24 @@
 """Durable experiment attempts with an atomic, one-shot release-test guard."""
+
 from __future__ import annotations
 
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from agent.contracts import FrozenDict, canonical_json, content_hash
-
 
 _SENSITIVE = {"api_key", "apikey", "token", "secret", "password", "authorization"}
 
 
 def _is_sensitive(name: str) -> bool:
-    return (name in _SENSITIVE
-            or name.endswith(("_api_key", "_secret_key", "_access_token", "_password")))
+    return name in _SENSITIVE or name.endswith(
+        ("_api_key", "_secret_key", "_access_token", "_password")
+    )
 
 
 def _reject_sensitive(value: Any, path: str = "config") -> None:
@@ -25,7 +26,9 @@ def _reject_sensitive(value: Any, path: str = "config") -> None:
         for key, item in value.items():
             normalized = str(key).casefold().replace("-", "_")
             if _is_sensitive(normalized):
-                raise ValueError(f"sensitive field is not permitted in experiment records: {path}.{key}")
+                raise ValueError(
+                    f"sensitive field is not permitted in experiment records: {path}.{key}"
+                )
             _reject_sensitive(item, f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
@@ -95,10 +98,17 @@ class ExperimentRegistry:
             "FROM experiment_attempts WHERE release_id=? ORDER BY sequence",
             (self.release_id,),
         ).fetchall()
-        return tuple(ExperimentAttempt(
-            row["attempt_id"], row["config_hash"], row["split"],
-            _freeze(json.loads(row["metrics_json"])), row["status"], row["failure"],
-        ) for row in rows)
+        return tuple(
+            ExperimentAttempt(
+                row["attempt_id"],
+                row["config_hash"],
+                row["split"],
+                _freeze(json.loads(row["metrics_json"])),
+                row["status"],
+                row["failure"],
+            )
+            for row in rows
+        )
 
     @staticmethod
     def _validate_split(split: str) -> None:
@@ -110,10 +120,14 @@ class ExperimentRegistry:
         _reject_sensitive(config)
         serialized = canonical_json(config)
         config_hash = content_hash(config)
-        attempt_id = content_hash({
-            "release_id": self.release_id, "nonce": uuid.uuid4().hex,
-            "config_hash": config_hash, "split": split,
-        })
+        attempt_id = content_hash(
+            {
+                "release_id": self.release_id,
+                "nonce": uuid.uuid4().hex,
+                "config_hash": config_hash,
+                "split": split,
+            }
+        )
         pending = ExperimentAttempt(attempt_id, config_hash, split, FrozenDict(), "pending")
         if self._db is None:
             if split == "test" and self._final_test_used:
@@ -146,8 +160,32 @@ class ExperimentRegistry:
             raise
         return pending
 
+    def resume_pending(
+        self, config: Mapping[str, Any], *, split: str = "test"
+    ) -> ExperimentAttempt:
+        """Resume exactly the reserved durable attempt, never reserve another test."""
+        if self._db is None or split != "test":
+            raise ValueError("held-out resume requires a durable test registry")
+        _reject_sensitive(config)
+        row = self._db.execute(
+            "SELECT a.* FROM final_test_locks l JOIN experiment_attempts a "
+            "ON a.attempt_id=l.attempt_id WHERE l.release_id=?",
+            (self.release_id,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "pending"
+            or row["split"] != split
+            or row["config_hash"] != content_hash(config)
+        ):
+            raise ValueError("no identical pending held-out attempt can be resumed")
+        return next(a for a in self.attempts if a.attempt_id == row["attempt_id"])
+
     def finish(
-        self, attempt_id: str, *, metrics: Mapping[str, Any] | None = None,
+        self,
+        attempt_id: str,
+        *,
+        metrics: Mapping[str, Any] | None = None,
         failure: str | None = None,
     ) -> ExperimentAttempt:
         if (metrics is None) == (failure is None):
@@ -160,8 +198,12 @@ class ExperimentRegistry:
             for index, attempt in enumerate(self._memory):
                 if attempt.attempt_id == attempt_id:
                     updated = ExperimentAttempt(
-                        attempt.attempt_id, attempt.config_hash, attempt.split,
-                        _freeze(payload), status, safe_failure,
+                        attempt.attempt_id,
+                        attempt.config_hash,
+                        attempt.split,
+                        _freeze(payload),
+                        status,
+                        safe_failure,
                     )
                     self._memory[index] = updated
                     return updated
@@ -176,7 +218,11 @@ class ExperimentRegistry:
         return next(item for item in self.attempts if item.attempt_id == attempt_id)
 
     def record(
-        self, config: Mapping[str, Any], *, split: str, metrics: Mapping[str, Any],
+        self,
+        config: Mapping[str, Any],
+        *,
+        split: str,
+        metrics: Mapping[str, Any],
     ) -> ExperimentAttempt:
         pending = self.begin(config, split=split)
         return self.finish(pending.attempt_id, metrics=metrics)
@@ -186,7 +232,8 @@ class ExperimentRunner:
     """Reserve, execute, and durably complete or fail an offline evaluation."""
 
     def __init__(
-        self, evaluator: Callable[[Mapping[str, Any], str], Mapping[str, Any]],
+        self,
+        evaluator: Callable[[Mapping[str, Any], str], Mapping[str, Any]],
         registry: ExperimentRegistry | None = None,
     ) -> None:
         if not callable(evaluator):
