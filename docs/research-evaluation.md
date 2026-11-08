@@ -1,5 +1,8 @@
 # Account-aware validation research evaluation
 
+Current commands and final protocol: [final-retraining.md](final-retraining.md).
+The material below records the earlier breakpoint; use the final runbook for retraining.
+
 This path calls the actual bounded research policy with the evolving replay
 portfolio. It preserves every valid HOLD, malformed output and risk rejection in
 the denominator and measures ending wealth from $100,000 after modeled costs.

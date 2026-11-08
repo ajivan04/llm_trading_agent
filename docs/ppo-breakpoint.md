@@ -1,5 +1,8 @@
 # Breakpoint 2 — corrected PPO, ready for review
 
+Current commands and final protocol: [final-retraining.md](final-retraining.md).
+The material below records the earlier breakpoint; use the final runbook for retraining.
+
 No production Qwen training, provider requests or Alpaca orders were run. Tests
 use a tiny randomly initialized Qwen2 with real LoRA layers on CPU. The full-size
 1.5B A30 memory/throughput and real SFT output-validity smoke remain pending.

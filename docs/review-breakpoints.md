@@ -197,3 +197,32 @@ submission entrypoints, immutable packaging and the aligned one-shot October
 26–30 test remain release gates. Do not score an October 30 decision's November
 2 outcome as part of that week. Historical NLP validation also still requires
 raw news, absent from the downloaded v5 archive.
+
+## Final breakpoint implementation handoff
+
+Use [final-retraining.md](final-retraining.md) for the complete ordered Turing
+workflow. Older job examples above are superseded. The final implementation adds
+non-destructive nominal-price reconstruction, resumable raw-news hydration,
+independent recent/midterm training folds, actual GOOD-only final-supervised SFT,
+immutable scheduler/checkpoint resumes, measured LoRA limits, train-only NLP PPO
+compilation, notebook-facing entrypoints, frozen inference/code packaging and a
+reserved one-shot October 26–30 historical test. Frozen paper loading preserves
+risk/research settings and starts isolated confirmed-trade memory.
+
+Independent read-only reviews identified split double-counting, missing action
+tail coverage, unsafe stale-label reuse, held-out date/resume identity gaps and
+unbound SFT training provenance. These findings have regression coverage. Release
+uses the exact completed final SFT output; PPO requires the verified SFT parent.
+No unsupported intermediate checkpoint inherits a completed parent's claims.
+
+Final local verification: 384 tests pass, including cached native Qwen tokenizer
+checks; changed Python files pass Ruff, compilation and whitespace checks; all
+shell/Slurm scripts pass Bash syntax; the offline demo runs. All model/broker
+execution tests use injected policies/transports. No provider credentials were
+read, no training or GPU pilot was launched and no Alpaca order was submitted.
+
+Implementation is ready for the staged runbook, not an empirical profitability
+or broker-fill claim. Actual collection, token/budget review, same-plan SFT smoke,
+PPO pilot, full matched validation, broker rehearsal and live-week evidence remain
+runtime review gates. Selection never uses the five-day held-out result. The
+November 9–13 paper week is separate from the historical October assessment.

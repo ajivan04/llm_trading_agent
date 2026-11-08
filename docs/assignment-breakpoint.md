@@ -1,5 +1,8 @@
 # Breakpoint 3: tools, language evidence and actual trajectories
 
+Current commands and final protocol: [final-retraining.md](final-retraining.md).
+The material below records the earlier breakpoint; use the final runbook for retraining.
+
 This breakpoint implements the notebook's research-tool interfaces and a new
 GOOD/BAD trajectory collection path. The policy remains the pinned
 `Qwen/Qwen2.5-1.5B-Instruct`. Historical collection uses existing prepared prices,
@@ -36,8 +39,10 @@ by private simulated portfolio outcomes and GOOD/BAD labels from net equity
 change after modeled costs. Only eligible GOOD trajectories become SFT targets.
 This differs from the existing oracle/counterfactual-best-action targets. Invalid
 JSON, missing real tool use, failed execution/risk checks and unprofitable outcomes
-remain diagnostic records rather than fabricated GOOD examples. SFT supervises
-assistant tool requests and final output; tool/provider text is masked. All
+remain diagnostic records rather than fabricated GOOD examples. The earlier `trajectory` mode supervises
+assistant tool requests and final output. The final assignment run uses
+`trajectory-final`: only final output is supervised, with research history and
+provider text masked. All
 native token spans and dataset identities are checked before allocating weights.
 
 The prepared manifest controls chronological boundaries. Collection never invokes

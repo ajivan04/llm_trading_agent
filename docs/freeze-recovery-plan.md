@@ -1,5 +1,8 @@
 # Two-day assignment and paper-trading release plan
 
+Current commands and final protocol: [final-retraining.md](final-retraining.md).
+The material below records the earlier breakpoint; use the final runbook for retraining.
+
 Planning baseline: November 6, 2026; freeze within 48 hours, approximately November
 8. Confirm the exact cutoff/time zone before scheduling final jobs. This document
 plans implementation; it does not claim the gates below have passed.
