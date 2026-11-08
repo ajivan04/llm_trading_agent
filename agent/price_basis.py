@@ -84,8 +84,26 @@ def complete_tail_actions(bars_by_symbol, *, fetcher=None, calendar=None):
         )
         returned = {}
         for symbol in requirements:
+            # A batch download has separate Price/Ticker column levels. Select
+            # the ticker before the single-symbol adapter flattens field names.
+            # Otherwise AAPL's and MSFT's Adj Close collide in the same row.
+            if frame is None:
+                raise ValueError("provider omitted split-action frame")
+            columns = frame.columns
+            if columns.nlevels > 1:
+                if columns.nlevels != 2 or list(columns.names).count("Ticker") != 1:
+                    raise ValueError("provider action columns lack an unambiguous Ticker level")
+                if symbol not in columns.get_level_values("Ticker"):
+                    raise ValueError(f"provider omitted split-action ticker {symbol}")
+                selected = frame.xs(symbol, axis=1, level="Ticker", drop_level=True)
+            elif len(requirements) == 1:
+                selected = frame
+            else:
+                raise ValueError("multi-symbol action download requires ticker-labeled columns")
+            if not selected.columns.is_unique:
+                raise ValueError("provider returned duplicate action columns")
             items = []
-            for session, row in YFinancePriceAdapter._iter_rows(frame, symbol):
+            for session, row in YFinancePriceAdapter._iter_rows(selected, symbol):
                 if "Stock Splits" not in row:
                     raise ValueError("provider omitted action coverage")
                 value = float(row["Stock Splits"])

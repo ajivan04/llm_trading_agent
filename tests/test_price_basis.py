@@ -106,3 +106,73 @@ class PriceBasisTests(unittest.TestCase):
             (source / "price-bars.jsonl").write_text("")
             with self.assertRaisesRegex(ValueError, "price hash"):
                 normalize_source(source, root / "corrupt")
+
+
+class BatchedYahooActionTests(unittest.TestCase):
+    def frame(self):
+        import pandas as pd
+
+        return pd.DataFrame(
+            {
+                ("Adj Close", "AAPL"): [50.0, 51.0],
+                ("Adj Close", "MSFT"): [200.0, 201.0],
+                ("Stock Splits", "AAPL"): [2.0, 0.0],
+                ("Stock Splits", "MSFT"): [0.0, 3.0],
+            },
+            index=pd.to_datetime(["2026-01-05", "2026-01-06"]),
+        ).rename_axis(columns=["Price", "Ticker"])
+
+    def source(self):
+        return {
+            "AAPL": (bar("2026-01-02", 50),),
+            "MSFT": (replace(bar("2026-01-02", 200), symbol="MSFT"),),
+        }
+
+    def test_default_transport_selects_each_ticker_in_either_multiindex_orientation(self):
+        from unittest.mock import patch
+
+        from agent.price_basis import normalize_bundle
+
+        frame = self.frame()
+        for response in (frame, frame.swaplevel("Price", "Ticker", axis=1)):
+            with self.subTest(names=response.columns.names):
+                with patch("yfinance.download", return_value=response) as download:
+                    normalized, tails = normalize_bundle(self.source())
+                self.assertEqual(download.call_count, 1)
+                self.assertEqual(tails["AAPL"], ({"session": "2026-01-05", "ratio": 2.0},))
+                self.assertEqual(tails["MSFT"], ({"session": "2026-01-06", "ratio": 3.0},))
+                self.assertEqual(normalized["AAPL"][0].close, 100)
+                self.assertEqual(normalized["MSFT"][0].close, 600)
+                self.assertEqual(normalized["AAPL"][0].price_basis, "nominal")
+
+    def test_single_flat_response_allowed_only_for_single_requested_symbol(self):
+        from unittest.mock import patch
+
+        frame = self.frame().xs("AAPL", axis=1, level="Ticker")
+        with patch("yfinance.download", return_value=frame):
+            self.assertEqual(
+                complete_tail_actions({"AAPL": self.source()["AAPL"]})["AAPL"][0]["ratio"], 2
+            )
+            with self.assertRaisesRegex(ValueError, "ticker-labeled"):
+                complete_tail_actions(self.source())
+
+    def test_missing_ticker_action_and_nan_fail_without_cross_symbol_substitution(self):
+        from unittest.mock import patch
+
+        frame = self.frame()
+        bad_frames = (
+            frame.drop(columns="MSFT", level="Ticker"),
+            frame.drop(columns=("Stock Splits", "MSFT")),
+            frame.rename_axis(columns=["Unknown", "Level"]),
+        )
+        for response in bad_frames:
+            with (
+                self.subTest(columns=list(response.columns)),
+                patch("yfinance.download", return_value=response),
+            ):
+                with self.assertRaises(ValueError):
+                    complete_tail_actions(self.source())
+        frame[("Stock Splits", "MSFT")] = float("nan")
+        with patch("yfinance.download", return_value=frame):
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                complete_tail_actions(self.source())
