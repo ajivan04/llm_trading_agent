@@ -300,10 +300,12 @@ class EvidenceContractTests(unittest.TestCase):
         bad["decisions"][0]["qty"] = 5
         with self.assertRaisesRegex(ValueError, "hold requires"):
             resolve_decisions(canonical_json(bad), messages=data, allowed_symbols=["AAPL"])
-        with self.assertRaisesRegex(ValueError, "valid JSON"):
+        self.assertEqual(
             resolve_decisions(
                 "```json\n" + decision() + "\n```", messages=data, allowed_symbols=["AAPL"]
-            )
+            )[0].qty,
+            0,
+        )
         with self.assertRaisesRegex(ValueError, "outside"):
             resolve_decisions(decision(), messages=data, allowed_symbols=["MSFT"])
         self.assertEqual(

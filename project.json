@@ -1,0 +1,12 @@
+{
+  "source": "artifacts/final-nlp-source",
+  "run_dir": "artifacts/assignment",
+  "env_file": ".env",
+  "train_sessions": 60,
+  "midterm_sessions": 20,
+  "validation_sessions": 20,
+  "context_tokens": 4096,
+  "generation_tokens": 512,
+  "sft_epochs": 3,
+  "ppo_updates": 100
+}

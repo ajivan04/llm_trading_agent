@@ -135,6 +135,7 @@ class PaperTradingLoop:
                         + " ".join(item.text[:500] for item in evidence[-4:])
                     )
                     memories = self.memory.context_memories(query, as_of=cutoff)
+                state["memory_count"] = len(memories)
                 print(
                     canonical_json(
                         {"event": "paper_policy_start", "cycle_id": cycle_id, "as_of": cutoff}
@@ -174,6 +175,7 @@ class PaperTradingLoop:
                     "submit": submit,
                     "decision_at": cutoff,
                     "response": response,
+                    "memories": list(memories),
                     "state": state,
                     "decisions": [d.to_dict() for d in checked["decisions"]],
                     "allowed_evidence": sorted(checked["allowed"]),

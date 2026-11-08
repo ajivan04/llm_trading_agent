@@ -10,6 +10,7 @@ from agent.execution import ExecutionPaused
 from agent.notebook_api import (
     NotebookSession,
     dispatch_tool,
+    list_tools,
     llm_agent_decide,
     register_tool,
     run_backtest,
@@ -18,8 +19,9 @@ from agent.notebook_api import (
 from agent.policy.evidence import visible_evidence
 from agent.research import ResearchPolicy, ResearchSettings
 from agent.runtime import PaperTradingLoop
+from agent.trajectories import TrajectorySettings
 from tests.test_research_runtime import Backend, final
-from tests.test_trajectories import DAYS, bars
+from tests.test_trajectories import DAYS, IDENTITY, bars
 
 CUTOFF = DAYS[1] + "T21:00:00Z"
 
@@ -83,6 +85,13 @@ class NotebookAPITests(unittest.TestCase):
             self.assertEqual(
                 register_tool("get_news", session=model)["name"], "get_news_for_symbols"
             )
+            self.assertEqual(
+                register_tool("search_market_news", session=model)["name"], "search_market_news"
+            )
+            self.assertEqual(
+                dispatch_tool("search_market_news", {}, session=model)["coverage"],
+                "archived-whitelist-news",
+            )
             result = dispatch_tool("get_news", {"symbols": ["AAPL"]}, session=model)
             self.assertEqual(result["status"], "missing")
             with self.assertRaisesRegex(ValueError, "cutoff"):
@@ -124,6 +133,110 @@ class NotebookAPITests(unittest.TestCase):
                 with self.assertRaises(TypeError):
                     run_backtest(None, model, collector=object(), n_days=2)
                 evaluate.assert_not_called()
+
+    def test_training_backtest_collects_actual_prompts_and_outcomes_for_notebook_collector(self):
+        import contextlib
+        import io
+
+        class Collector:
+            def __init__(self):
+                self.entries = []
+
+            def log(self, prompt, completion, decisions, equity, tool_calls=0):
+                self.entries.append(
+                    {
+                        "prompt": prompt,
+                        "completion": completion,
+                        "decisions": decisions,
+                        "equity": equity,
+                        "tool_calls": tool_calls,
+                    }
+                )
+                return len(self.entries) - 1
+
+            def update_outcome(self, index, equity):
+                self.entries[index]["equity_after"] = equity
+
+            def auto_label(self):
+                for row in self.entries:
+                    row["label"] = "good" if row["equity_after"] >= row["equity"] else "bad"
+
+        with session() as model, contextlib.redirect_stdout(io.StringIO()):
+
+            def respond(messages):
+                return final(next(iter(visible_evidence(messages))))
+
+            request = '{"tool":"get_price_history","arguments":{"symbol":"AAPL","period":"5d"}}'
+            model.policy.backend.outputs = iter([request, respond] * 3)
+            model.replay = {
+                "split": "train",
+                "bars_by_symbol": bars(),
+                "settings": TrajectorySettings(
+                    ("AAPL",),
+                    "2026-01-07T23:59:59Z",
+                    "2026-01-12T23:59:59Z",
+                    "2026-01-14T23:59:59Z",
+                ),
+                "decision_sessions": DAYS[:3],
+                "policy_identity": IDENTITY,
+                "next_session_resolver": dict(zip(DAYS, DAYS[1:], strict=False)).__getitem__,
+            }
+            collector = Collector()
+            output = run_backtest(None, model, collector, n_days=3)
+            collector.auto_label()
+            self.assertEqual(output["split"], "train")
+            self.assertEqual(len(output["collection"].records), 3)
+            self.assertEqual(len(collector.entries), 3)
+            self.assertFalse(output["collector_error"])
+            self.assertEqual(output["final_equity"], output["equity_history"][-1])
+            for entry, record in zip(collector.entries, output["collection"].records, strict=True):
+                self.assertEqual(json.loads(entry["prompt"]), record["messages"])
+                self.assertEqual(entry["completion"], record["completion"])
+                self.assertEqual(entry["equity_after"], record["equity_after"])
+                self.assertEqual(entry["tool_calls"], 1)
+                self.assertEqual(entry["label"], "good")
+            model.replay["split"] = "test"
+            with self.assertRaisesRegex(ValueError, "held-out"):
+                run_backtest(None, model, n_days=3)
+
+    def test_list_tools_exposes_actual_registered_interfaces(self):
+        with session() as model:
+            schemas = list_tools(session=model, verbose=False)
+            names = {schema["name"] for schema in schemas}
+            self.assertTrue(
+                {"get_news_for_symbols", "get_rsi", "get_macd", "get_sec_filings"} <= names
+            )
+            self.assertNotIn("submit_order", names)
+
+    def test_live_schedule_continues_recoverable_failures_and_supports_multi_hour_run(self):
+        with session() as model:
+            statuses = ["invalid_policy", "data_unavailable", "expired_signal"] + [
+                "completed"
+            ] * 117
+            loop = ScriptedLoop(model.policy, [{"status": status} for status in statuses])
+            model.paper_loop = loop
+            sleeps = []
+            output = run_trading_loop(
+                loop, None, model, n_iterations=120, interval_seconds=120, sleep=sleeps.append
+            )
+            self.assertEqual(len(output), 120)
+            self.assertEqual(len(loop.calls), 120)
+            self.assertEqual(sleeps, [120] * 119)
+            self.assertEqual(output[0]["status"], "invalid_policy")
+            for bad in (float("inf"), float("nan"), -1, True):
+                with self.assertRaises(ValueError):
+                    run_trading_loop(loop, None, model, n_iterations=1, interval_seconds=bad)
+
+    def test_unknown_execution_failure_stops_without_retrying_or_echoing_secret(self):
+        with session() as model:
+            loop = ScriptedLoop(
+                model.policy, [OSError("private-broker-message"), {"status": "completed"}]
+            )
+            model.paper_loop = loop
+            output = run_trading_loop(loop, None, model, n_iterations=2)
+            self.assertEqual(len(loop.calls), 1)
+            self.assertEqual(output[0]["status"], "error")
+            self.assertNotIn("private-broker", json.dumps(output))
 
     def test_submitting_loop_needs_stable_ids_and_pauses_without_secret_echo(self):
         with session() as model:
@@ -176,3 +289,27 @@ class NotebookAPITests(unittest.TestCase):
                 run_trading_loop(
                     loop, None, model, n_iterations=1, cycle_ids="letters", submit=True
                 )
+
+
+class PaperTerminalLoggingTests(unittest.TestCase):
+    def test_pause_and_error_are_logged_without_retrying_or_exposing_exception_values(self):
+        from agent.notebook_api import run_trading_loop
+
+        for event, status in (
+            (ExecutionPaused("private-broker-text"), "paused"),
+            (RuntimeError("private-provider-text"), "error"),
+        ):
+            with self.subTest(status=status), session() as model:
+                events = []
+                model.paper_loop = ScriptedLoop(model.policy, [event])
+                result = run_trading_loop(
+                    model.paper_loop,
+                    None,
+                    model,
+                    n_iterations=2,
+                    collector=SimpleNamespace(on_cycle_result=events.append),
+                )
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["status"], status)
+                self.assertEqual(len(model.paper_loop.calls), 1)
+                self.assertNotIn("private-", json.dumps(result))

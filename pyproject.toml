@@ -11,7 +11,6 @@ dependencies = []
 
 [project.optional-dependencies]
 data = [
-  "alpaca-py==0.44.0",
   "exchange-calendars==4.13.2",
   "yfinance==1.7.0",
 ]
@@ -21,8 +20,8 @@ train = [
   "peft==0.21.2",
   "torch==2.14.1",
   "transformers==5.20.2",
-  "trl==1.16.0",
 ]
+legacy-dpo = ["trl==1.16.0"]
 notebook = [
   "ipykernel==7.1.0",
   "jupyterlab==4.4.10",
@@ -32,9 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-stock-agent-dataset = "agent.dataset_cli:main"
-stock-agent-evaluate = "agent.evaluate_cli:main"
-stock-agent-portfolio-evaluate = "agent.portfolio_eval_cli:main"
+stock-agent = "agent.__main__:main"
 stock-agent-prepare = "agent.prepare_cli:main"
 stock-agent-compact = "agent.compact_cli:main"
 stock-agent-train = "agent.training.cli:main"

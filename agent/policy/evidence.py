@@ -198,7 +198,7 @@ def resolve_decisions(
     full-ID prompts work without any mapping. No archive lookup or approximate
     hash matching occurs.
     """
-    from .core import parse_decisions
+    from .core import parse_decisions, parse_policy_json
 
     visible = visible_evidence(messages)
     mapping = dict(aliases or {})
@@ -227,10 +227,9 @@ def resolve_decisions(
         if canonical_json(visible) != canonical_json(visible_evidence(expected_messages)):
             raise ValueError("projected evidence records do not match the original transcript")
     allowed_ids = {mapping.get(eid, eid) for eid in visible}
-    try:
-        payload = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("policy output is not valid JSON") from exc
+    payload = parse_policy_json(raw)
+    if isinstance(payload, list):
+        payload = {"decisions": payload}
     if isinstance(payload, dict) and isinstance(payload.get("decisions"), list):
         for decision in payload["decisions"]:
             if isinstance(decision, dict) and isinstance(decision.get("evidence_ids"), list):
@@ -247,7 +246,9 @@ def resolve_decisions(
     for decision in decisions:
         if decision.action in {"buy", "sell"} and not decision.evidence_ids:
             raise ValueError("trade decisions require visible supporting evidence")
-        if any(by_full[eid].get("symbol") not in (None, decision.symbol)
-               for eid in decision.evidence_ids):
+        if any(
+            by_full[eid].get("symbol") not in (None, decision.symbol)
+            for eid in decision.evidence_ids
+        ):
             raise ValueError("decision cites evidence for another symbol")
     return decisions

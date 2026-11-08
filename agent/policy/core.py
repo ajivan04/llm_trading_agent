@@ -181,13 +181,33 @@ def pack_prompt(
     )
 
 
+def parse_policy_json(raw):
+    """Accept one JSON object/array with optional prose/fences, never guess between outputs."""
+    if not isinstance(raw, str):
+        raise ValueError("policy output must be text")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    start = next((i for i, char in enumerate(raw) if char in "{["), None)
+    if start is None:
+        raise ValueError("policy output is not valid JSON")
+    try:
+        value, length = json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError as exc:
+        # Never scan into a malformed outer object and rescue an inner array.
+        raise ValueError("policy output is not valid JSON") from exc
+    if any(char in "{[" for char in raw[start + length :]):
+        raise ValueError("policy output is not valid JSON: expected one unambiguous response")
+    return value
+
+
 def parse_decisions(
     raw: str, *, allowed_symbols: Iterable[str], allowed_evidence_ids: Iterable[str]
 ) -> tuple[Decision, ...]:
-    try:
-        payload = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError("policy output is not valid JSON") from exc
+    payload = parse_policy_json(raw)
+    if isinstance(payload, list):
+        payload = {"decisions": payload}
     if not isinstance(payload, Mapping) or set(payload) != {"decisions"}:
         raise ValueError("decision response must contain only decisions")
     rows = payload["decisions"]
@@ -441,8 +461,8 @@ class QwenToolPolicy:
                 body = raw.strip()
                 if body.startswith("<tool_call>") and body.endswith("</tool_call>"):
                     body = body[len("<tool_call>") : -len("</tool_call>")].strip()
-                payload = json.loads(body)
-            except (TypeError, json.JSONDecodeError):
+                payload = parse_policy_json(body)
+            except (TypeError, ValueError):
                 return finish("parse_failure", failure="invalid_json")
             if isinstance(payload, Mapping) and set(payload) in (
                 {"tool", "arguments"},

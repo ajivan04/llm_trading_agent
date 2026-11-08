@@ -1,4 +1,5 @@
 """Pure-Python training contracts and numerically testable objectives."""
+
 from __future__ import annotations
 
 import math
@@ -76,8 +77,11 @@ class EpisodeExample:
 
 
 def validate_chronological_splits(
-    examples: Sequence[EpisodeExample], *, train_end: str | datetime,
-    validation_end: str | datetime, test_end: str | datetime,
+    examples: Sequence[EpisodeExample],
+    *,
+    train_end: str | datetime,
+    validation_end: str | datetime,
+    test_end: str | datetime,
 ) -> None:
     train_boundary = parse_timestamp(train_end)
     validation_boundary = parse_timestamp(validation_end)
@@ -113,7 +117,10 @@ class SFTExample:
 
 
 def build_sft_example(
-    example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    example: EpisodeExample,
+    tokenizer: ChatTemplateTokenizer,
+    *,
+    max_length: int,
     allowed_splits: tuple[str, ...] = ("train",),
 ) -> SFTExample:
     """Render native chat format and supervise assistant generation tokens only."""
@@ -131,8 +138,7 @@ def build_sft_example(
     messages = (*example.messages, FrozenDict({"role": "assistant", "content": example.completion}))
     chat_template = getattr(tokenizer, "chat_template", None)
     supports_generation_mask = (
-        not isinstance(chat_template, str)
-        or "{% generation %}" in chat_template
+        not isinstance(chat_template, str) or "{% generation %}" in chat_template
     )
     render_kwargs: dict[str, Any] = {}
     if supports_generation_mask:
@@ -165,7 +171,7 @@ def build_sft_example(
         if not isinstance(prompt_rendered, Mapping):
             raise TypeError("native chat template must return a mapping")
         prompt_ids = tuple(int(x) for x in prompt_rendered.get("input_ids", ()))
-        if not prompt_ids or tuple(input_ids[:len(prompt_ids)]) != prompt_ids:
+        if not prompt_ids or tuple(input_ids[: len(prompt_ids)]) != prompt_ids:
             raise ValueError("unable to derive assistant token span from chat template")
         assistant = (0,) * len(prompt_ids) + (1,) * (len(input_ids) - len(prompt_ids))
     if not input_ids or not (len(input_ids) == len(attention) == len(assistant)):
@@ -176,8 +182,7 @@ def build_sft_example(
         raise ValueError("attention and assistant masks must be binary")
     labels = tuple(
         token if is_attended and is_assistant else -100
-        for token, is_attended, is_assistant in zip(
-            input_ids, attention, assistant, strict=True)
+        for token, is_attended, is_assistant in zip(input_ids, attention, assistant, strict=True)
     )
     supervised = sum(label != -100 for label in labels)
     if supervised == 0:
@@ -186,11 +191,14 @@ def build_sft_example(
 
 
 def build_trajectory_sft_example(
-    example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    example: EpisodeExample,
+    tokenizer: ChatTemplateTokenizer,
+    *,
+    max_length: int,
     allowed_splits: tuple[str, ...] = ("train",),
 ) -> SFTExample:
     """Supervise assistant tool requests and final output, never tool data."""
-    import json
+
     if not allowed_splits or not set(allowed_splits) <= _SPLITS:
         raise ValueError("allowed_splits must name known nonempty splits")
     if example.split not in allowed_splits:
@@ -204,17 +212,21 @@ def build_trajectory_sft_example(
             continue
         raw = message.get("content", "").strip()
         if raw.startswith("<tool_call>") and raw.endswith("</tool_call>"):
-            raw = raw[len("<tool_call>"):-len("</tool_call>")].strip()
+            raw = raw[len("<tool_call>") : -len("</tool_call>")].strip()
         try:
-            request = json.loads(raw)
+            from agent.policy.core import parse_policy_json
+
+            request = parse_policy_json(raw)
         except (TypeError, ValueError) as exc:
             raise ValueError("trajectory assistant turn must be an actual tool request") from exc
-        if (not isinstance(request, dict)
-                or set(request) not in ({"tool", "arguments"}, {"name", "arguments"})
-                or not isinstance(request.get("tool", request.get("name")), str)
-                or not isinstance(request.get("arguments"), dict)
-                or index + 1 == len(prior)
-                or prior[index + 1].get("role") not in {"user", "tool"}):
+        if (
+            not isinstance(request, dict)
+            or set(request) not in ({"tool", "arguments"}, {"name", "arguments"})
+            or not isinstance(request.get("tool", request.get("name")), str)
+            or not isinstance(request.get("arguments"), dict)
+            or index + 1 == len(prior)
+            or prior[index + 1].get("role") not in {"user", "tool"}
+        ):
             raise ValueError("trajectory tool request requires a following tool result")
         calls += 1
     if not calls:
@@ -223,8 +235,12 @@ def build_trajectory_sft_example(
 
     def render(items, generation=False):
         value = tokenizer.apply_chat_template(
-            items, tokenize=True, add_generation_prompt=generation,
-            return_dict=True, truncation=False)
+            items,
+            tokenize=True,
+            add_generation_prompt=generation,
+            return_dict=True,
+            truncation=False,
+        )
         if not isinstance(value, Mapping):
             raise TypeError("native chat template must return a mapping")
         ids = tuple(int(x) for x in value.get("input_ids", ()))
@@ -241,9 +257,12 @@ def build_trajectory_sft_example(
         if message.get("role") != "assistant":
             continue
         before, _ = render(messages[:index], True)
-        through, _ = render(messages[:index + 1])
-        if (ids[:len(before)] != before or ids[:len(through)] != through
-                or len(through) <= len(before)):
+        through, _ = render(messages[: index + 1])
+        if (
+            ids[: len(before)] != before
+            or ids[: len(through)] != through
+            or len(through) <= len(before)
+        ):
             raise ValueError("unable to derive exact native assistant token spans")
         for offset in range(len(before), len(through)):
             if attention[offset]:
@@ -255,21 +274,29 @@ def build_trajectory_sft_example(
 
 
 def build_final_trajectory_sft_example(
-    example: EpisodeExample, tokenizer: ChatTemplateTokenizer, *, max_length: int,
+    example: EpisodeExample,
+    tokenizer: ChatTemplateTokenizer,
+    *,
+    max_length: int,
     allowed_splits: tuple[str, ...] = ("train",),
 ) -> SFTExample:
     """Notebook protocol: complete research history is context; only final output learns."""
-    built = build_trajectory_sft_example(example, tokenizer, max_length=max_length,
-                                         allowed_splits=allowed_splits)
+    built = build_trajectory_sft_example(
+        example, tokenizer, max_length=max_length, allowed_splits=allowed_splits
+    )
     prefix = tokenizer.apply_chat_template(
-        example.messages, tokenize=True, add_generation_prompt=True,
-        return_dict=True, truncation=False)
+        example.messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        truncation=False,
+    )
     if not isinstance(prefix, Mapping):
         raise TypeError("native chat template must return a mapping")
     ids = tuple(int(x) for x in prefix.get("input_ids", ()))
-    if not ids or built.input_ids[:len(ids)] != ids or len(ids) >= len(built.input_ids):
+    if not ids or built.input_ids[: len(ids)] != ids or len(ids) >= len(built.input_ids):
         raise ValueError("unable to derive exact final assistant token span")
-    labels = (-100,) * len(ids) + built.labels[len(ids):]
+    labels = (-100,) * len(ids) + built.labels[len(ids) :]
     supervised = sum(x != -100 for x in labels)
     if not supervised:
         raise ValueError("trajectory has no supervised final assistant tokens")
@@ -289,8 +316,12 @@ class DPOCandidate:
 
     def __post_init__(self) -> None:
         for name in (
-            "candidate_id", "prompt", "response", "snapshot_id",
-            "account_state_hash", "evidence_hash",
+            "candidate_id",
+            "prompt",
+            "response",
+            "snapshot_id",
+            "account_state_hash",
+            "evidence_hash",
         ):
             object.__setattr__(self, name, _required(getattr(self, name), name))
         if self.split not in _SPLITS:
@@ -299,11 +330,14 @@ class DPOCandidate:
 
     @property
     def state_hash(self) -> str:
-        return content_hash({
-            "prompt": self.prompt, "snapshot_id": self.snapshot_id,
-            "account_state_hash": self.account_state_hash,
-            "evidence_hash": self.evidence_hash,
-        })
+        return content_hash(
+            {
+                "prompt": self.prompt,
+                "snapshot_id": self.snapshot_id,
+                "account_state_hash": self.account_state_hash,
+                "evidence_hash": self.evidence_hash,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -334,7 +368,10 @@ class DPOPair:
 
 
 def build_dpo_pair(
-    first: DPOCandidate, second: DPOCandidate, *, minimum_margin: float = 0.0,
+    first: DPOCandidate,
+    second: DPOCandidate,
+    *,
+    minimum_margin: float = 0.0,
 ) -> DPOPair:
     if first.split != second.split or first.split not in {"train", "validation"}:
         raise ValueError("DPO pairs must use candidates from the same train/validation split")
@@ -345,15 +382,19 @@ def build_dpo_pair(
     margin_floor = _finite(minimum_margin, "minimum_margin")
     if margin_floor < 0:
         raise ValueError("minimum_margin must be nonnegative")
-    chosen, rejected = (
-        (first, second) if first.objective > second.objective else (second, first)
-    )
+    chosen, rejected = (first, second) if first.objective > second.objective else (second, first)
     margin = chosen.objective - rejected.objective
     if margin <= 0 or margin < margin_floor:
         raise ValueError("DPO preference is tied or below the minimum margin")
     return DPOPair(
-        chosen.prompt, chosen.response, rejected.response, chosen.state_hash,
-        margin, chosen.candidate_id, rejected.candidate_id, chosen.split,
+        chosen.prompt,
+        chosen.response,
+        rejected.response,
+        chosen.state_hash,
+        margin,
+        chosen.candidate_id,
+        rejected.candidate_id,
+        chosen.split,
     )
 
 
@@ -379,7 +420,9 @@ class PPOTransition:
         for name in ("rollout_id", "policy_version", "observation_hash"):
             object.__setattr__(self, name, _required(getattr(self, name), name))
         lengths = {
-            len(self.token_ids), len(self.action_mask), len(self.old_logprobs),
+            len(self.token_ids),
+            len(self.action_mask),
+            len(self.old_logprobs),
             len(self.reference_logprobs),
         }
         if len(lengths) != 1 or not self.token_ids:
@@ -397,7 +440,8 @@ class PPOTransition:
         components = {}
         for name, item in self.reward_components.items():
             components[_required(str(name), "reward component name")] = _finite(
-                item, f"reward_components[{name}]")
+                item, f"reward_components[{name}]"
+            )
         object.__setattr__(self, "reward_components", FrozenDict(components))
         if any(value not in (0, 1) for value in self.action_mask) or not any(self.action_mask):
             raise ValueError("PPO action_mask must be binary with an action token")
@@ -468,7 +512,10 @@ class PPORollout:
 
 
 def validate_fresh_rollout(
-    rollout: PPORollout, *, current_policy_version: str, expected_rollout_id: str,
+    rollout: PPORollout,
+    *,
+    current_policy_version: str,
+    expected_rollout_id: str,
 ) -> None:
     if rollout.policy_version != current_policy_version:
         raise ValueError("stale PPO rollout policy version")
@@ -477,7 +524,9 @@ def validate_fresh_rollout(
 
 
 def compute_gae(
-    transitions: Sequence[PPOTransition], *, gamma: float = 0.99,
+    transitions: Sequence[PPOTransition],
+    *,
+    gamma: float = 0.99,
     gae_lambda: float = 0.95,
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
     gamma = _finite(gamma, "gamma")
@@ -501,18 +550,33 @@ def compute_gae(
 
 
 def ppo_objective(
-    *, old_logprobs: Sequence[float], new_logprobs: Sequence[float],
-    advantages: Sequence[float], action_mask: Sequence[int],
-    old_values: Sequence[float], new_values: Sequence[float],
-    returns: Sequence[float], entropies: Sequence[float],
+    *,
+    old_logprobs: Sequence[float],
+    new_logprobs: Sequence[float],
+    advantages: Sequence[float],
+    action_mask: Sequence[int],
+    old_values: Sequence[float],
+    new_values: Sequence[float],
+    returns: Sequence[float],
+    entropies: Sequence[float],
     reference_logprobs: Sequence[float] | None = None,
     reference_kls: Sequence[float] | None = None,
-    clip_ratio: float = 0.2, value_clip: float = 0.2,
-    value_coefficient: float = 0.5, entropy_coefficient: float = 0.01,
+    clip_ratio: float = 0.2,
+    value_clip: float = 0.2,
+    value_coefficient: float = 0.5,
+    entropy_coefficient: float = 0.01,
     kl_coefficient: float = 0.0,
 ) -> Mapping[str, float]:
-    arrays = (old_logprobs, new_logprobs, advantages, action_mask,
-              old_values, new_values, returns, entropies)
+    arrays = (
+        old_logprobs,
+        new_logprobs,
+        advantages,
+        action_mask,
+        old_values,
+        new_values,
+        returns,
+        entropies,
+    )
     if not arrays[0] or len({len(values) for values in arrays}) != 1:
         raise ValueError("PPO objective arrays must be nonempty and aligned")
     if reference_logprobs is not None and len(reference_logprobs) != len(old_logprobs):
@@ -532,8 +596,13 @@ def ppo_objective(
     if any(selected not in (0, 1) for selected in action_mask) or not indices:
         raise ValueError("action_mask must be binary with selected tokens")
     numeric_arrays = (
-        old_logprobs, new_logprobs, advantages, old_values, new_values,
-        returns, entropies,
+        old_logprobs,
+        new_logprobs,
+        advantages,
+        old_values,
+        new_values,
+        returns,
+        entropies,
     ) + ((reference_logprobs,) if reference_logprobs is not None else ())
     for values in numeric_arrays:
         if any(not math.isfinite(float(value)) for value in values):
@@ -566,26 +635,32 @@ def ppo_objective(
     entropy = sum(float(entropies[index]) for index in indices) / len(indices)
     reference_kl = (
         sum(float(reference_kls[index]) for index in indices) / len(indices)
-        if reference_kls is not None else 0.0
+        if reference_kls is not None
+        else 0.0
     )
     sampled_reference_log_ratio = 0.0
     if reference_logprobs is not None:
         sampled_reference_log_ratio = sum(
-            float(new_logprobs[index]) - float(reference_logprobs[index])
-            for index in indices
+            float(new_logprobs[index]) - float(reference_logprobs[index]) for index in indices
         ) / len(indices)
-    total = (policy_loss + value_coefficient * value_loss
-             - entropy_coefficient * entropy + kl_coefficient * reference_kl)
-    return FrozenDict({
-        "loss": total,
-        "policy_loss": policy_loss,
-        "value_loss": value_loss,
-        "entropy": entropy,
-        "approx_kl": sum(approx_kls) / len(approx_kls),
-        "reference_kl": reference_kl,
-        "sampled_reference_log_ratio": sampled_reference_log_ratio,
-        "clip_fraction": sum(clipped_flags) / len(clipped_flags),
-    })
+    total = (
+        policy_loss
+        + value_coefficient * value_loss
+        - entropy_coefficient * entropy
+        + kl_coefficient * reference_kl
+    )
+    return FrozenDict(
+        {
+            "loss": total,
+            "policy_loss": policy_loss,
+            "value_loss": value_loss,
+            "entropy": entropy,
+            "approx_kl": sum(approx_kls) / len(approx_kls),
+            "reference_kl": reference_kl,
+            "sampled_reference_log_ratio": sampled_reference_log_ratio,
+            "clip_fraction": sum(clipped_flags) / len(clipped_flags),
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -608,7 +683,8 @@ class RewardComponents:
             raise ValueError("invalid_proposals must be a nonnegative integer")
         # Equity is net of execution costs. There is intentionally no second cost term.
         return (
-            math.log(after / before) - math.log1p(benchmark)
+            math.log(after / before)
+            - math.log1p(benchmark)
             - _finite(self.drawdown_weight, "drawdown_weight") * max(0.0, self.incremental_drawdown)
             - _finite(self.invalid_weight, "invalid_weight") * self.invalid_proposals
         )
@@ -641,8 +717,10 @@ class TrainingManifest:
         if rate <= 0:
             raise ValueError("learning_rate must be positive")
         object.__setattr__(self, "learning_rate", rate)
-        packages = {str(key): _required(value, f"package_versions[{key}]")
-                    for key, value in self.package_versions.items()}
+        packages = {
+            str(key): _required(value, f"package_versions[{key}]")
+            for key, value in self.package_versions.items()
+        }
         object.__setattr__(self, "package_versions", FrozenDict(packages))
         hashes = tuple(_required(value, "data_hash") for value in self.data_hashes)
         if not hashes:
@@ -653,4 +731,3 @@ class TrainingManifest:
     @property
     def manifest_hash(self) -> str:
         return content_hash(self)
-

@@ -280,9 +280,11 @@ def _capture(result: Any, *, as_of: str) -> dict[str, Any]:
         text = message["content"].strip()
         if text.startswith("<tool_call>") and text.endswith("</tool_call>"):
             text = text[len("<tool_call>") : -len("</tool_call>")].strip()
+        from agent.policy.core import parse_policy_json
+
         try:
-            request = json.loads(text)
-        except json.JSONDecodeError:
+            request = parse_policy_json(text)
+        except ValueError:
             continue
         if (
             not isinstance(request, Mapping)
