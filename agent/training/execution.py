@@ -72,6 +72,7 @@ class TrainerSettings:
     reference_adapter_checkpoint: Path | None = None
     supervision_mode: str = "final"
     stop_after_steps: int | None = None
+    eval_steps: int = 25
 
     def __post_init__(self) -> None:
         if self.supervision_mode not in {"final", "trajectory", "trajectory-final"}:
@@ -97,6 +98,7 @@ class TrainerSettings:
             "gradient_accumulation_steps",
             "save_steps",
             "logging_steps",
+            "eval_steps",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -181,11 +183,11 @@ def _argument_values(settings: TrainerSettings, *, evaluate: bool) -> dict[str, 
         "save_steps": settings.save_steps,
         "logging_steps": settings.logging_steps,
         "eval_strategy": "steps" if evaluate else "no",
-        "eval_steps": settings.save_steps if evaluate else None,
+        "eval_steps": settings.eval_steps if evaluate else None,
         "save_strategy": "steps",
-        "load_best_model_at_end": evaluate,
-        "metric_for_best_model": "eval_loss" if evaluate else None,
-        "greater_is_better": False if evaluate else None,
+        # Keep checkpoint recovery independent of validation cadence. The final
+        # saved adapter is compared in the separate stateful evaluation workflow.
+        "load_best_model_at_end": False,
         "bf16": settings.bf16,
         "gradient_checkpointing": settings.gradient_checkpointing,
         "report_to": [],

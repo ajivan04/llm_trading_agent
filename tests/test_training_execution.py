@@ -164,7 +164,9 @@ class ExecutionTests(unittest.TestCase):
             self.assertTrue(trainer.state_saved)
             self.assertEqual(
                 trainer.kwargs["data_collator"].kwargs["label_pad_token_id"], -100)
-            self.assertTrue(trainer.kwargs["args"].values["load_best_model_at_end"])
+            self.assertFalse(trainer.kwargs["args"].values["load_best_model_at_end"])
+            self.assertEqual(trainer.kwargs["args"].values["save_steps"], 1)
+            self.assertEqual(trainer.kwargs["args"].values["eval_steps"], 25)
 
     def test_dpo_uses_same_state_pair_rows(self):
         pair = DPOPair(
@@ -264,39 +266,63 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(len(hashes), 2)
 
     def test_sft_manifest_is_recomputed_not_trusted(self):
+        from agent.datasets import DatasetArtifact, DatasetManifest
+        from agent.training.cli import _jsonl
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            train_rows = [{"example_id": "train", "split": "train"}]
-            validation_rows = [{"example_id": "validation", "split": "validation"}]
-            all_rows = [*train_rows, *validation_rows]
-            split_ids = {"train": ["train"], "validation": ["validation"], "test": []}
+            train = replace(
+                example("train"),
+                decision_at="2026-01-02T00:00:00Z",
+                outcome_at="2026-01-05T00:00:00Z",
+            )
+            validation = replace(
+                example("validation"),
+                decision_at="2026-01-06T00:00:00Z",
+                outcome_at="2026-01-07T00:00:00Z",
+            )
+            examples = (train, validation)
+            boundaries = ("2026-01-05T23:59:59Z", "2026-01-08T23:59:59Z", "2026-01-09T23:59:59Z")
+            split_ids = {
+                "train": (train.example_id,),
+                "validation": (validation.example_id,),
+                "test": (),
+            }
             identity = {
-                "examples": all_rows, "splits": split_ids, "purged": [],
-                "source_hashes": ["source"],
-                "boundaries": ("train-end", "validation-end", "test-end"),
+                "examples": examples,
+                "splits": split_ids,
+                "purged": (),
+                "source_hashes": ("source",),
+                "boundaries": boundaries,
+                "regime_id": "chronological-v1",
+                "decision_session_filter_hash": "",
             }
-            dataset_hash = content_hash(identity)
-            manifest = {
-                "dataset_hash": dataset_hash, "split_example_ids": split_ids,
-                "purged_episode_ids": [], "source_hashes": ["source"],
-                "train_end": "train-end", "validation_end": "validation-end",
-                "test_end": "test-end",
-            }
-            for name, rows in (("train", train_rows), ("validation", validation_rows),
-                               ("examples", all_rows)):
-                Path(root, f"{name}.jsonl").write_text(
-                    "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-            Path(root, "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            _verify_sft_manifest(
-                root / "train.jsonl", root / "validation.jsonl",
-                train_rows, validation_rows)
-            all_rows[0]["tampered"] = True
-            Path(root, "examples.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in all_rows), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "hash verification"):
+            manifest = DatasetManifest(
+                content_hash(identity), split_ids, (), ("source",), *boundaries
+            )
+            DatasetArtifact(examples, manifest).write(root)
+            train_rows, validation_rows = (
+                _jsonl(root / "train.jsonl"),
+                _jsonl(root / "validation.jsonl"),
+            )
+            self.assertEqual(
                 _verify_sft_manifest(
-                    root / "train.jsonl", root / "validation.jsonl",
-                    train_rows, validation_rows)
+                    root / "train.jsonl", root / "validation.jsonl", train_rows, validation_rows
+                ),
+                manifest.dataset_hash,
+            )
+            changed_rows = [{**train_rows[0], "completion": "changed loaded row"}]
+            with self.assertRaisesRegex(ValueError, "split files differ"):
+                _verify_sft_manifest(root / "train.jsonl", root / "validation.jsonl",
+                                     changed_rows, validation_rows)
+            # A valid-looking manifest cannot conceal changed content.
+            payload = json.loads((root / "manifest.json").read_text())
+            payload["dataset_hash"] = "tampered"
+            (root / "manifest.json").write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "content hash"):
+                _verify_sft_manifest(
+                    root / "train.jsonl", root / "validation.jsonl", train_rows, validation_rows
+                )
 
     def test_cli_requires_recomputable_dpo_audit(self):
         from agent.contracts import canonical_json

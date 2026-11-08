@@ -87,46 +87,21 @@ def _verify_sft_manifest(
     train_rows: list[dict[str, Any]],
     validation_rows: list[dict[str, Any]],
 ) -> str:
+    from agent.datasets import load_dataset_artifact
+
+    train_path, validation_path = train_path.resolve(), validation_path.resolve()
     if train_path.parent != validation_path.parent:
         raise ValueError("SFT train and validation files must share one dataset artifact")
-    manifest_path = train_path.parent / "manifest.json"
-    if not manifest_path.exists():
-        raise ValueError("SFT requires the dataset artifact manifest.json")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    dataset_hash = manifest.get("dataset_hash")
-    if not isinstance(dataset_hash, str) or not dataset_hash:
-        raise ValueError("SFT dataset manifest is missing dataset_hash")
-    split_ids = manifest.get("split_example_ids", {})
-    examples_path = train_path.parent / "examples.jsonl"
-    if not examples_path.exists():
-        raise ValueError("SFT dataset artifact is missing examples.jsonl")
-    all_rows = _jsonl(examples_path)
-    identity = {
-        "examples": all_rows,
-        "splits": split_ids,
-        "purged": manifest.get("purged_episode_ids", []),
-        "source_hashes": manifest.get("source_hashes", []),
-        "boundaries": (
-            manifest.get("train_end"),
-            manifest.get("validation_end"),
-            manifest.get("test_end"),
-        ),
-    }
-    if "regime_id" in manifest:
-        identity["regime_id"] = manifest["regime_id"]
-    if "decision_session_filter_hash" in manifest:
-        identity["decision_session_filter_hash"] = manifest["decision_session_filter_hash"]
-    if content_hash(identity) != dataset_hash:
-        raise ValueError("SFT dataset artifact hash verification failed")
-    expected_train = [row for row in all_rows if row.get("split") == "train"]
-    expected_validation = [row for row in all_rows if row.get("split") == "validation"]
-    if train_rows != expected_train or validation_rows != expected_validation:
-        raise ValueError("SFT split files differ from the verified dataset artifact")
-    if [row.get("example_id") for row in train_rows] != list(split_ids.get("train", ())):
-        raise ValueError("SFT train rows do not match the dataset manifest")
-    if [row.get("example_id") for row in validation_rows] != list(split_ids.get("validation", ())):
-        raise ValueError("SFT validation rows do not match the dataset manifest")
-    return dataset_hash
+    if train_path.name != "train.jsonl" or validation_path.name != "validation.jsonl":
+        raise ValueError(
+            "SFT requires the artifact's named train.jsonl and validation.jsonl splits"
+        )
+    artifact = load_dataset_artifact(train_path.parent)
+    for split, rows in (("train", train_rows), ("validation", validation_rows)):
+        expected = tuple(item for item in artifact.examples if item.split == split)
+        if tuple(_episode_example(row) for row in rows) != expected:
+            raise ValueError("SFT split files differ from the verified dataset artifact")
+    return artifact.manifest.dataset_hash
 
 
 def _audited_dpo_pair(row: dict[str, Any], expected_split: str) -> DPOPair:
@@ -209,6 +184,7 @@ def _settings(args: argparse.Namespace, hashes: tuple[str, ...]) -> TrainerSetti
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         save_steps=args.save_steps,
         logging_steps=args.logging_steps,
+        eval_steps=args.eval_steps,
         bf16=not args.no_bf16,
         gradient_checkpointing=not args.no_gradient_checkpointing,
         resume_from_checkpoint=args.resume_from_checkpoint,
@@ -234,6 +210,12 @@ def _add_common(parser: argparse.ArgumentParser, *, datasets: bool = True) -> No
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--save-steps", type=int, default=25)
     parser.add_argument("--logging-steps", type=int, default=5)
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=25,
+        help="loss-evaluation cadence, independent of recovery checkpoint saves",
+    )
     parser.add_argument("--resume-from-checkpoint")
     parser.add_argument(
         "--adapter-checkpoint",
@@ -598,11 +580,6 @@ def main(argv: list[str] | None = None) -> int:
         from .validation import validate_sft_targets
 
         validate_sft_targets([_episode_example(row) for row in (*train_rows, *validation_rows)])
-        from agent.datasets import load_dataset_artifact
-
-        verified = load_dataset_artifact(args.train.parent)
-        if verified.manifest.dataset_hash != dataset_hash:
-            raise ValueError("SFT artifact identity changed during preflight")
         has_trajectory = any(
             message.get("role") == "assistant"
             for row in (*train_rows, *validation_rows)
