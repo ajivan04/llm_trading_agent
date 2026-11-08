@@ -68,7 +68,9 @@ are enforced; do not substitute a real-money account. See `paper-breakpoint.md`.
 
 ```bash
 sbatch scripts/normalize_prices_turing.slurm
-# After successful completion:
+# After normalization completes successfully, switch the hydration input:
+export SOURCE_ROOT="$NOMINAL_ROOT"
+test -f "$SOURCE_ROOT/price-basis-manifest.json"
 sbatch scripts/hydrate_news_turing.slurm
 ```
 
@@ -81,6 +83,11 @@ split. This is a reconstruction from a later vendor capture, not proof of an
 untouched historical vendor vintage. Adjustment factors stay private.
 Provider references: [yfinance split repair](https://ranaroussi.github.io/yfinance/advanced/price_repair.html),
 [Yahoo adjusted close convention](https://in.help.yahoo.com/kb/adjusted-close-sln28256.html).
+
+The normalization job cannot change variables in your login shell. Hydration
+must read `NOMINAL_ROOT`, not the original v5 archive. In a new shell, set
+`SOURCE_ROOT` explicitly to the completed nominal directory before hydration.
+A price-basis guard failure occurs during planning before news requests.
 
 Hydration preserves prices and SEC text and fetches complete weekly news windows
 for the selected cohorts; it does not query the intervening years. Created and
