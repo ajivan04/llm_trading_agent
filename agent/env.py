@@ -17,7 +17,7 @@ def load_credentials(path):
     path = Path(path)
     if not path.is_file():
         raise ValueError("credential file is missing")
-    for raw in path.read_text().splitlines():
+    for number, raw in enumerate(path.read_text().splitlines(), 1):
         raw = raw.strip()
         if not raw or raw.startswith("#"):
             continue
@@ -32,7 +32,11 @@ def load_credentials(path):
         try:
             parsed = shlex.split(value, comments=True, posix=True)
         except ValueError:
-            raise ValueError("invalid credential quoting") from None
+            raise ValueError(f"invalid quoting for {key} on line {number}") from None
+        # Empty placeholders are common for optional providers. Required values
+        # are checked by the consumer that actually needs that provider.
+        if not parsed or parsed == [""]:
+            continue
         if len(parsed) != 1:
-            raise ValueError("credential values with spaces must be quoted")
+            raise ValueError(f"{key} on line {number}: values with spaces must be quoted")
         os.environ.setdefault(key, parsed[0])
