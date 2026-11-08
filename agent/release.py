@@ -28,21 +28,64 @@ def code_hashes(root=None):
 
 
 def source_hashes(prepared):
-    names = (
-        "price-bars.jsonl",
-        "evidence.jsonl",
-        "preparation-manifest.json",
-        "dataset/manifest.json",
-    )
-    result = {name: file_hash(Path(prepared) / name) for name in names}
-    for name in (
-        "hydration-manifest.json",
-        "compaction-manifest.json",
-        "price-basis-manifest.json",
+    from agent.source_bundle import load_source
+
+    return load_source(prepared)["file_hashes"]
+
+
+def verify_trained_adapter(adapter):
+    """Check completed saved weights without requiring release/evaluation packaging."""
+    adapter = Path(adapter)
+    training_root = adapter if (adapter / "training_manifest.json").is_file() else adapter.parent
+    training = json.loads((training_root / "training_manifest.json").read_text())
+    manifest, tm = training["manifest"], training["metrics"]
+    if training.get("manifest_hash") != content_hash(manifest):
+        raise ValueError("training provenance checksum failed")
+    if (
+        manifest["model_name"] != POLICY_MODEL
+        or manifest["model_revision"] != POLICY_REVISION
+        or manifest["tokenizer_revision"] != POLICY_REVISION
     ):
-        if (Path(prepared) / name).is_file():
-            result[name] = file_hash(Path(prepared) / name)
-    return result
+        raise ValueError("release requires a completed pinned training run")
+    if manifest["method"] == "sft":
+        if (
+            training_root != adapter
+            or tm.get("inference_adapter_fingerprint") != adapter_fingerprint(adapter)
+            or tm.get("status") != "completed"
+            or not 0 < tm.get("trainable_parameter_fraction", 1) < 0.001
+            or tm.get("supervision_mode") != "trajectory-final"
+            or tm.get("completed_steps", 0) < tm.get("planned_steps", 1)
+        ):
+            raise ValueError("SFT release requires completed assignment final-only supervision")
+    elif manifest["method"] == "ppo":
+        status = json.loads((training_root / "training_status.json").read_text())
+        if (
+            status.get("status") != "completed"
+            or status["completed_updates"] < status["target_updates"]
+        ):
+            raise ValueError("PPO release is a stopped or partial experiment")
+        from agent.training.execution import _path_hash
+        from agent.training.qwen_ppo import PPO_IMPLEMENTATION_VERSION
+
+        state = json.loads((training_root / "ppo_state.json").read_text())
+        contract = state["run_contract"]
+        parent = contract.get("initial_sft") or {}
+        if (
+            state.get("implementation_version") != PPO_IMPLEMENTATION_VERSION
+            or state.get("run_fingerprint") != content_hash(contract)
+            or state.get("adapter_hash") != _path_hash(adapter)
+            or parent.get("supervision_mode") != "trajectory-final"
+            or not parent.get("inference_weights_verified")
+            or parent.get("status") != "completed"
+            or parent.get("completed_steps", 0) < parent.get("planned_steps", 1)
+            or not 0 < parent.get("trainable_parameter_fraction", 1) < 0.001
+            or contract.get("prompt_version") != "final-decision-nlp-v1"
+        ):
+            raise ValueError("PPO release lacks corrected final-only SFT parent provenance")
+        training = {**training, "ppo_state_provenance": state, "training_status": status}
+    else:
+        raise ValueError("final release candidates are assignment SFT or corrected PPO")
+    return training
 
 
 def freeze_release(*, adapter, prepared, validation, config, output):
@@ -97,55 +140,8 @@ def freeze_release(*, adapter, prepared, validation, config, output):
         )
     ):
         raise ValueError("paper risk rules differ from the validated replay defaults")
-    training_root = adapter if (adapter / "training_manifest.json").is_file() else adapter.parent
-    training = json.loads((training_root / "training_manifest.json").read_text())
-    manifest, tm = training["manifest"], training["metrics"]
-    if training.get("manifest_hash") != content_hash(manifest):
-        raise ValueError("training provenance checksum failed")
-    if (
-        manifest["model_name"] != POLICY_MODEL
-        or manifest["model_revision"] != POLICY_REVISION
-        or manifest["tokenizer_revision"] != POLICY_REVISION
-    ):
-        raise ValueError("release requires a completed pinned training run")
-    if manifest["method"] == "sft":
-        if (
-            training_root != adapter
-            or tm.get("inference_adapter_fingerprint") != adapter_fingerprint(adapter)
-            or tm.get("status") != "completed"
-            or not 0 < tm.get("trainable_parameter_fraction", 1) < 0.001
-            or tm.get("supervision_mode") != "trajectory-final"
-            or tm.get("completed_steps", 0) < tm.get("planned_steps", 1)
-        ):
-            raise ValueError("SFT release requires completed assignment final-only supervision")
-    elif manifest["method"] == "ppo":
-        status = json.loads((training_root / "training_status.json").read_text())
-        if (
-            status.get("status") != "completed"
-            or status["completed_updates"] < status["target_updates"]
-        ):
-            raise ValueError("PPO release is a stopped or partial experiment")
-        from agent.training.execution import _path_hash
-        from agent.training.qwen_ppo import PPO_IMPLEMENTATION_VERSION
-
-        state = json.loads((training_root / "ppo_state.json").read_text())
-        contract = state["run_contract"]
-        parent = contract.get("initial_sft") or {}
-        if (
-            state.get("implementation_version") != PPO_IMPLEMENTATION_VERSION
-            or state.get("run_fingerprint") != content_hash(contract)
-            or state.get("adapter_hash") != _path_hash(adapter)
-            or parent.get("supervision_mode") != "trajectory-final"
-            or not parent.get("inference_weights_verified")
-            or parent.get("status") != "completed"
-            or parent.get("completed_steps", 0) < parent.get("planned_steps", 1)
-            or not 0 < parent.get("trainable_parameter_fraction", 1) < 0.001
-            or contract.get("prompt_version") != "final-decision-nlp-v1"
-        ):
-            raise ValueError("PPO release lacks corrected final-only SFT parent provenance")
-        training = {**training, "ppo_state_provenance": state, "training_status": status}
-    else:
-        raise ValueError("final release candidates are assignment SFT or corrected PPO")
+    training = verify_trained_adapter(adapter)
+    manifest = training["manifest"]
     root = Path(__file__).parent.parent
     current_code = code_hashes(root)
     if protocol.get("research_policy_identity", {}).get("model_revision") != POLICY_REVISION:

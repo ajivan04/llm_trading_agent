@@ -159,7 +159,7 @@ class TrajectoryCLITests(unittest.TestCase):
                 self.assertEqual(result["train_counts"]["good_export_candidates"], 2)
                 self.assertTrue((root / "export/dataset/manifest.json").is_file())
 
-    def test_legacy_compaction_requires_matching_verified_target(self):
+    def test_legacy_compaction_checks_metadata_but_does_not_require_old_targets(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "prepared"
@@ -198,8 +198,9 @@ class TrajectoryCLITests(unittest.TestCase):
                 compaction["dataset_hash"] = artifact.manifest.dataset_hash
                 (root / "compaction-manifest.json").write_text(canonical_json(compaction))
                 (root / "dataset/train.jsonl").write_text("")
-                with self.assertRaisesRegex(ValueError, "train dataset file"):
-                    main(arguments)
+                # These are not training inputs; corrupt old targets must not
+                # prevent collecting a fresh, genuine model trajectory corpus.
+                self.assertEqual(self.run_cli(arguments)[0]["sessions"], [DAYS[1], DAYS[2]])
 
 
 if __name__ == "__main__":

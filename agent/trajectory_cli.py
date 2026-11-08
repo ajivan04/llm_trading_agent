@@ -13,7 +13,7 @@ from typing import Any
 
 from agent.contracts import Evidence, canonical_json, content_hash, parse_timestamp
 from agent.data.prices import DailyPriceBar
-from agent.datasets import load_dataset_artifact
+from agent.source_bundle import load_source
 from agent.trajectories import (
     TrajectorySettings,
     collect_trajectories,
@@ -21,7 +21,7 @@ from agent.trajectories import (
     load_collection,
     merge_train_collections,
 )
-from agent.universe import BASELINE_UNIVERSE
+from agent.universe import BASELINE_UNIVERSE, assignment_sector_map
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,32 +132,19 @@ def _policy(args):
 
 def _plan(args):
     source = args.prepared.resolve()
-    hydration = source / "hydration-manifest.json"
-    if hydration.is_file() and json.loads(hydration.read_text()).get("heldout_news_requested"):
+    metadata = load_source(source)
+    if metadata["scope"] == "heldout":
         raise ValueError("held-out source cannot be used for training or validation selection")
-    required = (
-        "dataset/manifest.json",
-        "preparation-manifest.json",
-        "price-bars.jsonl",
-        "evidence.jsonl",
-    )
-    hashes = {name: _file_hash(source / name) for name in required}
-    manifest = json.loads((source / "dataset/manifest.json").read_text())
-    prepared_manifest = json.loads((source / "preparation-manifest.json").read_text())
-    if (
-        prepared_manifest.get("heldout_news_requested")
-        or prepared_manifest.get("archive_kind") == "frozen-heldout-source"
-    ):
-        raise ValueError("held-out source cannot be used for training or validation selection")
-    if hydration.is_file():
-        hashes["hydration-manifest.json"] = _file_hash(hydration)
-    if (source / "compaction-manifest.json").is_file():
-        hashes["compaction-manifest.json"] = _file_hash(source / "compaction-manifest.json")
-    if (source / "price-basis-manifest.json").is_file():
-        hashes["price-basis-manifest.json"] = _file_hash(source / "price-basis-manifest.json")
+    hashes = metadata["file_hashes"]
     universe = tuple(args.symbols or BASELINE_UNIVERSE)
+    if metadata["universe"] and not set(universe) <= set(metadata["universe"]):
+        raise ValueError("source does not cover the requested universe")
     settings = TrajectorySettings(
-        universe, manifest["train_end"], manifest["validation_end"], manifest["test_end"]
+        universe,
+        metadata["train_end"],
+        metadata["validation_end"],
+        metadata["test_end"],
+        sector_map=assignment_sector_map(universe) if len(universe) == 100 else (),
     )
     for name in (
         "max_context_tokens",
@@ -179,35 +166,11 @@ def _plan(args):
         raise ValueError("decision dates must start in 2016 or later with an ordered end")
     bars: dict[str, list[DailyPriceBar]] = defaultdict(list)
     source_rows = _rows(source / "price-bars.jsonl")
-    if prepared_manifest.get("source_hash") != content_hash(tuple(source_rows)):
+    if metadata["price_hash"] is not None and metadata["price_hash"] != content_hash(
+        tuple(source_rows)
+    ):
         raise ValueError("prepared price archive differs from its source hash")
-    compaction_provenance = None
-    if prepared_manifest.get("dataset_hash") != manifest.get("dataset_hash"):
-        compaction_path = source / "compaction-manifest.json"
-        if not compaction_path.is_file():
-            raise ValueError(
-                "prepared dataset manifest identity differs without compaction lineage"
-            )
-        compaction = json.loads(compaction_path.read_text())
-        if (
-            compaction.get("dataset_hash") != manifest.get("dataset_hash")
-            or compaction.get("compaction_version") != "evidence-compaction-v2"
-        ):
-            raise ValueError("prepared dataset manifest differs from compaction lineage")
-        load_dataset_artifact(source / "dataset")
-        hashes["compaction-manifest.json"] = _file_hash(compaction_path)
-        compaction_provenance = {
-            "version": compaction["compaction_version"],
-            "source_target_link_verified": (
-                compaction.get("source_dataset_hash") == prepared_manifest.get("dataset_hash")
-            ),
-            "preserved_price_hash_verified": True,
-            "preserved_evidence_count_verified": True,
-            "legacy_targets_consumed": False,
-            "legacy_compaction_source_link_unverified": (
-                compaction.get("source_dataset_hash") != prepared_manifest.get("dataset_hash")
-            ),
-        }
+    compaction_provenance = metadata["compaction_provenance"]
     if any(row.get("price_basis") != "nominal" for row in source_rows):
         raise ValueError("source price basis requires normalization before training or evaluation")
     for row in source_rows:
@@ -271,7 +234,7 @@ def _plan(args):
             )
     selected = tuple(candidates[-count:])
     evidence = tuple(Evidence(**row) for row in _rows(source / "evidence.jsonl"))
-    if prepared_manifest.get("counts", {}).get("evidence") != len(evidence):
+    if metadata["evidence_count"] is not None and metadata["evidence_count"] != len(evidence):
         raise ValueError("prepared evidence archive count differs from manifest")
     coverage = []
     for day in selected:
@@ -324,7 +287,8 @@ def _plan(args):
         "sec_text_records": filing_text,
         "decision_window_coverage": coverage,
         "diagnostic_missing_nlp_allowed": args.allow_missing_nlp,
-        "source_dataset_hash": manifest["dataset_hash"],
+        "source_dataset_hash": metadata["dataset_hash"],
+        "source_id": metadata["source_id"],
         "compaction_provenance": compaction_provenance,
         "settings": asdict(settings),
     }

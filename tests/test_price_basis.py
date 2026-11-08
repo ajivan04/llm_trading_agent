@@ -92,11 +92,14 @@ class PriceBasisTests(unittest.TestCase):
                 source, output, tail_fetcher=lambda *_: self.fail("nominal tail fetched")
             )
             self.assertEqual((source / "price-bars.jsonl").read_bytes(), before)
-            self.assertEqual((output / "dataset/examples.jsonl").read_bytes(), target)
+            self.assertEqual((source / "dataset/examples.jsonl").read_bytes(), target)
+            self.assertFalse((output / "dataset").exists())
             self.assertFalse((output / ".env").exists())
             self.assertFalse((output / "ppo-train.jsonl").exists())
-            prep = json.loads((output / "preparation-manifest.json").read_text())
-            self.assertFalse(prep["old_training_targets_usable"])
+            from agent.source_bundle import load_source
+
+            self.assertEqual(load_source(output)["scope"], "research")
+            self.assertFalse((output / "preparation-manifest.json").exists())
             self.assertTrue(
                 all(
                     json.loads(r)["source"] != "yfinance"

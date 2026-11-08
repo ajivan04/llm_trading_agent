@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent.contracts import Evidence, canonical_json, parse_timestamp
 from agent.hydrate_news import hydrate, hydration_plan
+from agent.source_bundle import load_source
 from tests.test_compact_artifact import prepared_source
 
 
@@ -42,7 +43,7 @@ class HydrationTests(unittest.TestCase):
     def plan(self, source):
         return hydration_plan(source, train_sessions=1, validation_sessions=1, symbols=["AAPL"])
 
-    def test_preserves_raw_sources_targets_and_omits_stale_models_and_secrets(self):
+    def test_preserves_raw_sources_without_copying_obsolete_targets_or_secrets(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             source = self.source(root)
@@ -52,7 +53,9 @@ class HydrationTests(unittest.TestCase):
             output = root / "hydrated"
             result = hydrate(source, output, adapter=Provider(), plan=plan)
             self.assertEqual((output / "price-bars.jsonl").read_bytes(), before)
-            self.assertEqual((output / "dataset/examples.jsonl").read_bytes(), targets)
+            self.assertEqual((source / "dataset/examples.jsonl").read_bytes(), targets)
+            self.assertFalse((output / "dataset").exists())
+            self.assertEqual(load_source(output)["train_end"], load_source(source)["train_end"])
             self.assertFalse((output / ".env").exists())
             self.assertFalse((output / "dataset/unexpected-secret.txt").exists())
             self.assertFalse((output / "ppo-train.jsonl").exists())
@@ -62,8 +65,8 @@ class HydrationTests(unittest.TestCase):
             self.assertGreater(result["raw_news_evidence_records_added"], 0)
             self.assertEqual(result["policy_calls"], 0)
             self.assertFalse(result["heldout_news_requested"])
-            prep = json.loads((output / "preparation-manifest.json").read_text())
-            self.assertFalse(prep["old_training_targets_usable"])
+            self.assertEqual(load_source(output)["scope"], "research")
+            self.assertFalse((output / "preparation-manifest.json").exists())
 
     def test_resume_reuses_chunks_and_rejects_swapped_request_or_changed_source(self):
         with tempfile.TemporaryDirectory() as folder:

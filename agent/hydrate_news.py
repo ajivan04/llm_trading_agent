@@ -1,4 +1,4 @@
-"""Resume-safe raw-news augmentation; preserves prices, SEC and old targets."""
+"""Resume-safe raw-news augmentation; preserves prices and SEC, never old targets."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from agent.artifacts import atomic_json, check_files
 from agent.contracts import Evidence, canonical_json, content_hash, parse_timestamp
 from agent.data.news import AlpacaNewsAdapter
-from agent.datasets import load_dataset_artifact
+from agent.source_bundle import load_source, write_source
 from agent.trajectory_cli import _file_hash, _plan, _rows, build_parser
 
 
@@ -45,16 +45,6 @@ def hydration_plan(
             for day in sessions
         ]
         summaries.append({**summary, "cutoffs": cutoffs})
-    for summary in summaries:
-        for name in (
-            "manifest.json",
-            "examples.jsonl",
-            "train.jsonl",
-            "validation.jsonl",
-            "test.jsonl",
-        ):
-            summary["source_file_hashes"]["dataset/" + name] = _file_hash(source / "dataset" / name)
-    load_dataset_artifact(source / "dataset")
     intervals = sorted(
         (
             min(parse_timestamp(t) for t in p["cutoffs"]) - timedelta(days=60),
@@ -103,21 +93,13 @@ def heldout_hydration_plan(source, frozen_release):
     universe = json.loads((frozen_release.path / "paper-config.json").read_text())["universe"]
     source = Path(source).resolve()
     hashes = dict(frozen_release.manifest["source_file_hashes"])
-    for name in (
-        "manifest.json",
-        "examples.jsonl",
-        "train.jsonl",
-        "validation.jsonl",
-        "test.jsonl",
-    ):
-        hashes["dataset/" + name] = _file_hash(source / "dataset" / name)
-    artifact = load_dataset_artifact(source / "dataset")
+    metadata = load_source(source)
     plan = {
         "version": "raw-news-hydration-v1",
         "source": str(source),
         "source_file_hashes": hashes,
         "universe": universe,
-        "dataset_hash": artifact.manifest.dataset_hash,
+        "dataset_hash": metadata["dataset_hash"],
         "page_limit": 50,
         "latest_only": False,
         "code_hash": _file_hash(Path(__file__)),
@@ -265,15 +247,6 @@ def hydrate(
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir()
-        (staging / "dataset").mkdir()
-        for name in (
-            "manifest.json",
-            "examples.jsonl",
-            "train.jsonl",
-            "validation.jsonl",
-            "test.jsonl",
-        ):
-            shutil.copy2(source / "dataset" / name, staging / "dataset" / name)
         shutil.copy2(source / "price-bars.jsonl", staging / "price-bars.jsonl")
         if (source / "price-basis-manifest.json").is_file():
             shutil.copy2(
@@ -320,34 +293,19 @@ def hydrate(
         with (staging / "evidence.jsonl").open("w") as handle:
             for eid in sorted(evidence):
                 handle.write(canonical_json(evidence[eid]) + "\n")
-        prep = json.loads((source / "preparation-manifest.json").read_text())
-        prep = {
-            **prep,
-            "dataset_hash": plan["dataset_hash"],
-            "source_preparation_dataset_hash": prep["dataset_hash"],
-            "source_artifact_hash": prep.get("artifact_hash"),
-            "archive_kind": (
-                "frozen-heldout-source"
-                if plan.get("test_release_id")
-                else "hydrated-research-source-v1"
-            ),
-            "heldout_news_requested": bool(plan.get("test_release_id")),
-            "test_release_id": plan.get("test_release_id"),
-            "upstream_counts": prep["counts"],
-            "old_training_targets_usable": False,
-            "counts": {
-                "evidence": len(evidence),
-                "dpo_train": 0,
-                "dpo_validation": 0,
-                "ppo_train": 0,
-            },
-        }
+        metadata = load_source(source)
+        write_source(
+            staging,
+            metadata,
+            universe=metadata["universe"] or tuple(plan["universe"]),
+            scope="heldout" if plan.get("test_release_id") else metadata["scope"],
+            parent_source_id=metadata["source_id"],
+            test_release_id=plan.get("test_release_id"),
+        )
         output_hashes = {
-            p.name: _file_hash(p)
-            for p in (staging / "price-bars.jsonl", staging / "evidence.jsonl")
+            name: _file_hash(staging / name)
+            for name in ("price-bars.jsonl", "evidence.jsonl", "source.json")
         }
-        prep["artifact_hash"] = content_hash({"plan": plan, "output": output_hashes})
-        (staging / "preparation-manifest.json").write_text(canonical_json(prep) + "\n")
         coverage = []
         raw_times = [
             (
@@ -386,10 +344,9 @@ def hydrate(
         preserved = {
             name: value
             for name, value in plan["source_file_hashes"].items()
-            if name.startswith("dataset/") or name == "price-bars.jsonl"
+            if name == "price-bars.jsonl"
         }
         check_files(staging, preserved)
-        load_dataset_artifact(staging / "dataset")
         if output.exists():
             raise ValueError("hydration output appeared during collection; refusing to replace it")
         staging.rename(output)
