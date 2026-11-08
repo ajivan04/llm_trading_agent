@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -108,7 +108,12 @@ def main(argv: list[str] | None = None) -> int:
             item
             for item in (*extras[symbol], *extras[None])
             if item.eligible(as_of)
-            and cutoff - parse_timestamp(item.available_at)
+            and cutoff
+            - parse_timestamp(
+                item.observed_at
+                if item.source in {"alpaca.news", "alpha_vantage.news"}
+                else item.available_at
+            )
             <= timedelta(
                 days=(
                     args.sec_lookback_days
@@ -139,6 +144,9 @@ def main(argv: list[str] | None = None) -> int:
         protocol={
             **result.protocol,
             "source_coverage": summary["decision_window_coverage"],
+            "source_file_hashes": summary["source_file_hashes"],
+            "research_settings": asdict(research.settings),
+            "research_policy_identity": base_identity,
             "diagnostic_missing_nlp_allowed": args.allow_missing_nlp,
             "memory": {"mode": "disabled", "initial_digest": content_hash(())},
         },

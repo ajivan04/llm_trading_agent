@@ -13,6 +13,7 @@ from agent.context import ContextConfig, build_context, project_evidence_record
 from agent.contracts import Evidence, content_hash, normalize_timestamp
 from agent.features import PriceFeatureBuilder
 from agent.policy import QwenToolPolicy, ToolRegistry
+from agent.price_basis import split_adjusted_closes
 from agent.tools import AssignmentTools
 
 
@@ -21,6 +22,7 @@ class ResearchSettings:
     max_context_tokens: int = 4096
     max_new_tokens: int = 512
     max_turns: int = 6
+    min_tool_calls: int = 1
     max_research_symbols: int = 8
     tool_context_reserve: int = 768
     training_template_reserve: int = 8
@@ -36,8 +38,13 @@ class ResearchSettings:
         for name in ("max_context_tokens", "max_new_tokens", "max_turns", "max_research_symbols"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if (type(self.training_template_reserve) is not int
-                or self.training_template_reserve < 0):
+        if (
+            type(self.min_tool_calls) is not int
+            or self.min_tool_calls < 0
+            or self.min_tool_calls >= self.max_turns
+        ):
+            raise ValueError("required tool research must leave a final turn")
+        if type(self.training_template_reserve) is not int or self.training_template_reserve < 0:
             raise ValueError("training template headroom must be nonnegative")
         if self.max_context_tokens <= self.max_new_tokens + self.training_template_reserve:
             raise ValueError("research context must reserve final output tokens")
@@ -45,7 +52,7 @@ class ResearchSettings:
             type(self.tool_context_reserve) is not int
             or self.tool_context_reserve < 0
             or self.max_context_tokens - self.tool_context_reserve
-                <= self.max_new_tokens + self.training_template_reserve
+            <= self.max_new_tokens + self.training_template_reserve
         ):
             raise ValueError("tool headroom must leave a usable initial research budget")
 
@@ -84,6 +91,7 @@ class ResearchPolicy:
             "policy/loader.py",
             "tools/assignment.py",
             "features.py",
+            "price_basis.py",
         )
         code = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sources}
         identity["protocol_hash"] = content_hash(
@@ -93,8 +101,9 @@ class ResearchPolicy:
                 "mode": self.mode,
                 "code": code,
                 "tokenizer_revision": getattr(self.backend, "tokenizer_revision", None),
-                "candidate_rule": ("absolute trailing five-session raw-close return, "
-                                   "held symbols first"),
+                "candidate_rule": (
+                    "absolute trailing five-session split-aware close return, held symbols first"
+                ),
                 "decoding": "greedy strict final JSON; no post-hoc schema repair",
             }
         )
@@ -115,8 +124,8 @@ class ResearchPolicy:
 
         def score(symbol):
             rows = prices[symbol]
-            old = rows[-min(6, len(rows))].values["raw"]["close"]
-            new = rows[-1].values["raw"]["close"]
+            closes = split_adjusted_closes(rows)
+            old, new = closes[-min(6, len(closes))], closes[-1]
             return (-abs(float(new) / float(old) - 1), symbol)
 
         ranked = sorted(prices, key=score)
@@ -181,7 +190,8 @@ class ResearchPolicy:
                 tools=registry.schemas,
                 token_counter=self.backend.token_count,
                 max_context_tokens=(
-                    self.settings.max_context_tokens - self.settings.tool_context_reserve
+                    self.settings.max_context_tokens
+                    - self.settings.tool_context_reserve
                     - self.settings.training_template_reserve
                 ),
                 reserved_final_tokens=self.settings.max_new_tokens,
@@ -194,12 +204,14 @@ class ResearchPolicy:
                 max_turns=self.settings.max_turns,
                 max_new_tokens=self.settings.max_new_tokens,
                 token_counter=self.backend.token_count,
-                max_context_tokens=(self.settings.max_context_tokens
-                                    - self.settings.training_template_reserve),
+                max_context_tokens=(
+                    self.settings.max_context_tokens - self.settings.training_template_reserve
+                ),
                 evidence_projector=lambda item: project_evidence_record(
                     item, as_of=cutoff, config=self.settings.context
                 ),
                 continue_tool_errors=True,
+                min_tool_calls=self.settings.min_tool_calls,
                 secret_values=getattr(tools, "_secrets", ()),
             )
             result = policy.run(

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent.contracts import Evidence, canonical_json, content_hash, parse_timestamp
 from agent.data.prices import DailyPriceBar
+from agent.price_basis import split_adjusted_closes
 from agent.tools import AssignmentTools
 
 
@@ -27,7 +28,10 @@ class LiveResearchSeed:
         with paths[0].open() as handle:
             previous = {}
             for line in handle:
-                bar = DailyPriceBar(**json.loads(line))
+                row = json.loads(line)
+                if row.get("price_basis") != "nominal":
+                    raise ValueError("archive must declare normalized nominal share units")
+                bar = DailyPriceBar(**row)
                 if bar.session <= previous.get(bar.symbol, ""):
                     raise ValueError("archive prices are duplicated or unordered")
                 previous[bar.symbol] = bar.session
@@ -54,20 +58,20 @@ class LiveResearchSeed:
             {
                 "archive_hashes": before,
                 "live_symbols": max_symbols,
-                "prefetch": "held first then absolute five-session return",
+                "prefetch": "held first then absolute five-session split-aware return",
             }
         )
 
     def refresh(self, universe, state):
         prices = defaultdict(list)
-        for item in self.records.values():
+        for item in self(self.clock().isoformat(), universe):
             if item.source == "yfinance" and item.symbol in universe:
                 prices[item.symbol].append(item)
 
         def rank(symbol):
             rows = sorted(prices[symbol], key=lambda r: r.values["session"])
-            old, new = rows[-min(6, len(rows))], rows[-1]
-            return (-abs(new.values["raw"]["close"] / old.values["raw"]["close"] - 1), symbol)
+            closes = split_adjusted_closes(rows)
+            return (-abs(closes[-1] / closes[-min(6, len(closes))] - 1), symbol)
 
         ranked = sorted(prices, key=rank)
         held = [s for s in universe if state.positions.get(s, 0)]

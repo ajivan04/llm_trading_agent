@@ -393,6 +393,8 @@ def collect_trajectories(
     resume: bool = False,
     max_sessions: int | None = None,
     evaluation_only: bool = False,
+    frozen_release=None,
+    frozen_test_permit=None,
 ) -> TrajectoryCollection:
     """Collect actual decisions; each split starts an independent cash portfolio.
 
@@ -400,15 +402,32 @@ def collect_trajectories(
     Validation collection is explicit; test collection is deliberately unavailable.
     ``max_sessions`` is a total prefix target, enabling a small smoke then resume.
     """
-    if split not in {"train", "validation"}:
-        raise ValueError("only train or explicit validation trajectory collection is allowed")
-    if type(evaluation_only) is not bool or (evaluation_only and split != "validation"):
-        raise ValueError(
-            "evaluation replay is validation-only; held-out execution is gated separately"
+    if split == "test":
+        from agent.release import FrozenRelease, PendingTestPermit
+
+        if (
+            not evaluation_only
+            or not isinstance(frozen_release, FrozenRelease)
+            or not isinstance(frozen_test_permit, PendingTestPermit)
+        ):
+            raise ValueError("held-out replay requires a verified frozen release")
+        frozen_release.authorize_test(
+            settings=settings,
+            decision_sessions=decision_sessions,
+            next_session_resolver=next_session_resolver,
         )
+        frozen_test_permit.verify(
+            frozen_release, journal=journal, evidence_source_hash=evidence_source_hash
+        )
+    elif split not in {"train", "validation"}:
+        raise ValueError("only train or explicit validation trajectory collection is allowed")
+    if type(evaluation_only) is not bool or (evaluation_only and split == "train"):
+        raise ValueError("evaluation replay cannot use the training split")
     identity = _identity(
         policy_identity or getattr(decide, "policy_identity", None), evaluation_only=evaluation_only
     )
+    if split == "test" and identity["adapter_hash"] != frozen_release.manifest["adapter_hash"]:
+        raise ValueError("held-out policy differs from the frozen selected adapter")
     if evidence_provider is not None and (
         not isinstance(evidence_source_hash, str)
         or len(evidence_source_hash) != 64
@@ -444,11 +463,15 @@ def collect_trajectories(
         next_bars = {s: rows[following] for s, rows in by_symbol.items()}
         at = max(row.close_at for row in current_bars.values())
         outcome_at = max(row.close_at for row in next_bars.values())
-        eligible = (
-            parse_timestamp(outcome_at) <= train_end
-            if split == "train"
-            else train_end < parse_timestamp(at) and parse_timestamp(outcome_at) <= validation_end
-        )
+        if split == "test":
+            eligible = following in frozen_release.manifest["test_execution_sessions"]
+        else:
+            eligible = (
+                parse_timestamp(outcome_at) <= train_end
+                if split == "train"
+                else train_end < parse_timestamp(at)
+                and parse_timestamp(outcome_at) <= validation_end
+            )
         if not eligible:
             continue
         if next_session_resolver is not None and next_session_resolver(current) != following:
@@ -458,15 +481,27 @@ def collect_trajectories(
     if not windows:
         raise ValueError("no complete eligible trajectory windows for the requested split")
     planned = tuple(row[0] for row in windows)
+    if split == "test" and planned != tuple(frozen_release.manifest["test_decision_sessions"]):
+        raise ValueError("all frozen held-out windows must be complete before any policy calls")
     source_hash = content_hash(
         {
             "price_bars": {s: tuple(by_symbol[s].values()) for s in settings.universe},
             "evidence_source_hash": evidence_source_hash,
         }
     )
+    if split == "test":
+        frozen_test_permit.verify(
+            frozen_release,
+            journal=journal,
+            price_content_hash=content_hash(
+                {s: tuple(by_symbol[s].values()) for s in settings.universe}
+            ),
+        )
     contract = {
         "version": PROTOCOL_VERSION,
         "evaluation_only": evaluation_only,
+        "release_id": frozen_release.release_id if split == "test" else None,
+        "test_attempt_id": frozen_test_permit.attempt_id if split == "test" else None,
         "settings": asdict(settings),
         "split": split,
         "policy_identity": identity,
@@ -712,6 +747,40 @@ def collect_trajectories(
     )
 
 
+def merge_train_collections(collections):
+    """Pool independent chronological training folds without fabricating continuity."""
+    collections = tuple(collections)
+    if not collections:
+        raise ValueError("at least one independent training fold is required")
+    first = collections[0]
+    records, sessions, seen = [], [], set()
+    for number, collection in enumerate(collections):
+        _identity(collection.policy_identity)
+        if (
+            collection.split != "train"
+            or collection.settings != first.settings
+            or collection.policy_identity != first.policy_identity
+            or len(collection.records) != len(collection.planned_sessions)
+        ):
+            raise ValueError("training folds must be complete with matching policy/source settings")
+        if seen.intersection(collection.planned_sessions):
+            raise ValueError("training folds overlap; do not duplicate exposure")
+        seen.update(collection.planned_sessions)
+        sessions.extend(collection.planned_sessions)
+        records.extend(
+            {**row, "source_fold": number, "independent_fold": True} for row in collection.records
+        )
+    return TrajectoryCollection(
+        first.settings,
+        "train",
+        first.policy_identity,
+        content_hash({"independent_fold_sources": [c.source_hash for c in collections]}),
+        tuple(sorted(records, key=lambda r: r["session"])),
+        tuple(sorted(sessions)),
+        tuple(row for c in collections for row in c.skipped_windows),
+    )
+
+
 def export_good_dataset(
     train: TrajectoryCollection, validation: TrajectoryCollection, output: Path
 ) -> DatasetArtifact:
@@ -813,7 +882,7 @@ def export_good_dataset(
                 "filter_explanation": (
                     "HOLD-only, failed/rejected and unresearched outputs are not SFT targets"
                 ),
-                "supervision_mode": "trajectory",
+                "supervision_mode": "trajectory-final",
                 "train_counts": train.counts,
                 "validation_counts": validation.counts,
                 "test_policy_calls": 0,

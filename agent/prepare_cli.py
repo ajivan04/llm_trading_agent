@@ -1,4 +1,5 @@
 """Download daily prices and prepare SFT, DPO, and PPO artifacts."""
+
 from __future__ import annotations
 
 import argparse
@@ -39,29 +40,41 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-bps", type=float, default=5.0)
     parser.add_argument("--trade-qty", type=int, default=5)
     parser.add_argument(
-        "--regime", choices=("none", "midterm-election", "midterm-election-plus-recent"),
+        "--regime",
+        choices=("none", "midterm-election", "midterm-election-plus-recent"),
         default="none",
         help="restrict decision sessions to the declared event-regime windows",
     )
-    parser.add_argument("--recent-start", default=None,
-                        help="inclusive YYYY-MM-DD start for the recent mixed-regime window")
-    parser.add_argument("--recent-end", default=None,
-                        help="exclusive YYYY-MM-DD end for the recent mixed-regime window")
-    parser.add_argument("--target-election-year", type=int, default=2026)
-    parser.add_argument("--historical-election-years", type=int, nargs="+",
-                        default=[2022, 2018])
     parser.add_argument(
-        "--evidence-mode", choices=("price-only", "news", "sec", "news-sec"),
+        "--recent-start",
+        default=None,
+        help="inclusive YYYY-MM-DD start for the recent mixed-regime window",
+    )
+    parser.add_argument(
+        "--recent-end",
+        default=None,
+        help="exclusive YYYY-MM-DD end for the recent mixed-regime window",
+    )
+    parser.add_argument("--target-election-year", type=int, default=2026)
+    parser.add_argument("--historical-election-years", type=int, nargs="+", default=[2022, 2018])
+    parser.add_argument(
+        "--evidence-mode",
+        choices=("price-only", "news", "sec", "news-sec"),
         default="price-only",
         help="point-in-time evidence sources to include in policy prompts",
     )
     parser.add_argument("--news-lookback-days", type=int, default=60)
     parser.add_argument("--sec-lookback-days", type=int, default=60)
     parser.add_argument("--news-limit", type=int, default=50)
-    parser.add_argument("--max-news-articles", type=int, default=8,
-                        help="maximum raw articles per symbol/decision; archive keeps all")
     parser.add_argument(
-        "--news-provider", choices=("alpaca", "alpha-vantage"),
+        "--max-news-articles",
+        type=int,
+        default=8,
+        help="maximum raw articles per symbol/decision; archive keeps all",
+    )
+    parser.add_argument(
+        "--news-provider",
+        choices=("alpaca", "alpha-vantage"),
         default=os.environ.get("NEWS_PROVIDER", "alpaca"),
     )
     return parser
@@ -103,7 +116,8 @@ def _sec_text_request(url: str, *, headers: dict[str, str]) -> str:
 def _eligible_news(items, *, as_of: str, lookback_days: int):
     cutoff_at = parse_timestamp(as_of)
     return tuple(
-        item for item in items
+        item
+        for item in items
         if item.eligible(as_of)
         and (cutoff_at - parse_timestamp(item.available_at)).total_seconds()
         <= lookback_days * 86400
@@ -115,8 +129,9 @@ def select_news_evidence(items, *, as_of: str, lookback_days: int, max_articles:
     if type(max_articles) is not int or not 1 <= max_articles <= 50:
         raise ValueError("max news articles must be 1..50")
     eligible = _eligible_news(items, as_of=as_of, lookback_days=lookback_days)
-    return tuple(sorted(eligible, key=lambda item: (item.available_at, item.id),
-                        reverse=True)[:max_articles])
+    return tuple(
+        sorted(eligible, key=lambda item: (item.available_at, item.id), reverse=True)[:max_articles]
+    )
 
 
 def archive_news_evidence(prepared, articles):
@@ -164,9 +179,12 @@ def _news_windows(args, allowed_sessions: tuple[str, ...]):
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if (args.news_lookback_days <= 0 or args.sec_lookback_days <= 0
-            or not 1 <= args.news_limit <= 1000
-            or not 1 <= args.max_news_articles <= 50):
+    if (
+        args.news_lookback_days <= 0
+        or args.sec_lookback_days <= 0
+        or not 1 <= args.news_limit <= 1000
+        or not 1 <= args.max_news_articles <= 50
+    ):
         raise ValueError("lookback windows must be positive and news limit must be 1..1000")
     symbols = tuple(symbol.strip().upper() for symbol in args.symbols)
     if not symbols or any(not item for item in symbols) or len(set(symbols)) != len(symbols):
@@ -181,10 +199,16 @@ def main(argv: list[str] | None = None) -> int:
     retrieved_at = datetime.now(UTC)
     bars = {
         symbol: adapter.fetch(
-            symbol, start=args.start, end=args.end, retrieved_at=retrieved_at,
+            symbol,
+            start=args.start,
+            end=args.end,
+            retrieved_at=retrieved_at,
         )
         for symbol in symbols
     }
+    from agent.price_basis import normalize_bundle
+
+    bars, _price_action_tails = normalize_bundle(bars)
     regime_plan = None
     allowed_sessions = ()
     if args.regime in {"midterm-election", "midterm-election-plus-recent"}:
@@ -203,7 +227,8 @@ def main(argv: list[str] | None = None) -> int:
             # All symbols share the XNYS session calendar; use the first
             # downloaded symbol to add ordinary recent sessions.
             recent_sessions = {
-                bar.session for bar in bars[symbols[0]]
+                bar.session
+                for bar in bars[symbols[0]]
                 if recent_start_at <= datetime.fromisoformat(bar.session).date() < recent_end_at
             }
             allowed_sessions = tuple(sorted(set(allowed_sessions) | recent_sessions))
@@ -229,8 +254,12 @@ def main(argv: list[str] | None = None) -> int:
             grouped_news: dict[str, dict[str, object]] = defaultdict(dict)
             for window_start, window_end in _news_windows(args, allowed_sessions):
                 fetched_news = news_adapter.fetch(
-                    symbols, time_from=window_start, time_to=window_end,
-                    as_of=cutoff, retrieved_at=retrieved_at, limit=args.news_limit,
+                    symbols,
+                    time_from=window_start,
+                    time_to=window_end,
+                    as_of=cutoff,
+                    retrieved_at=retrieved_at,
+                    limit=args.news_limit,
                 )
                 for item in fetched_news:
                     grouped_news[item.symbol][item.id] = item
@@ -241,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
             if not user_agent:
                 raise ValueError("SEC_USER_AGENT is required for SEC evidence")
             sec_adapter = SecDataAdapter(
-                user_agent, lambda url, headers: _sec_request(url, headers=headers),
+                user_agent,
+                lambda url, headers: _sec_request(url, headers=headers),
                 text_request=lambda url, headers: _sec_text_request(url, headers=headers),
             )
             ticker_map = sec_adapter.fetch_ticker_map()
@@ -255,7 +285,10 @@ def main(argv: list[str] | None = None) -> int:
                     sec_by_symbol[symbol] = ()
                     continue
                 filings = sec_adapter.fetch_submissions(
-                    cik, symbol=symbol, as_of=cutoff, retrieved_at=retrieved_at,
+                    cik,
+                    symbol=symbol,
+                    as_of=cutoff,
+                    retrieved_at=retrieved_at,
                 )
                 sec_by_symbol[symbol] = filings
 
@@ -263,20 +296,31 @@ def main(argv: list[str] | None = None) -> int:
             extras = []
             if args.evidence_mode in {"news", "news-sec"}:
                 eligible_news = _eligible_news(
-                    news_by_symbol[symbol], as_of=as_of,
+                    news_by_symbol[symbol],
+                    as_of=as_of,
                     lookback_days=args.news_lookback_days,
                 )
-                extras.append(aggregate_news(
-                    eligible_news, symbol=symbol, as_of=as_of, retrieved_at=retrieved_at,
-                ))
-                extras.extend(select_news_evidence(
-                    eligible_news, as_of=as_of, lookback_days=args.news_lookback_days,
-                    max_articles=args.max_news_articles,
-                ))
+                extras.append(
+                    aggregate_news(
+                        eligible_news,
+                        symbol=symbol,
+                        as_of=as_of,
+                        retrieved_at=retrieved_at,
+                    )
+                )
+                extras.extend(
+                    select_news_evidence(
+                        eligible_news,
+                        as_of=as_of,
+                        lookback_days=args.news_lookback_days,
+                        max_articles=args.max_news_articles,
+                    )
+                )
             if args.evidence_mode in {"sec", "news-sec"}:
                 cutoff_at = parse_timestamp(as_of)
                 eligible_sec = tuple(
-                    item for item in sec_by_symbol[symbol]
+                    item
+                    for item in sec_by_symbol[symbol]
                     if item.eligible(as_of)
                     and (cutoff_at - parse_timestamp(item.available_at)).days
                     <= args.sec_lookback_days
@@ -285,15 +329,21 @@ def main(argv: list[str] | None = None) -> int:
                 for filing in eligible_sec[-5:]:
                     if filing.id not in sec_text_cache:
                         sec_text_cache[filing.id] = sec_adapter.fetch_filing_text(
-                            filing, as_of=as_of, retrieved_at=retrieved_at,
+                            filing,
+                            as_of=as_of,
+                            retrieved_at=retrieved_at,
                         )
                     extras.append(sec_text_cache[filing.id])
             return tuple(extras)
+
     prepared = prepare_training_artifacts(
         bars,
         settings=PreparationSettings(
-            train_end=args.train_end, validation_end=args.validation_end,
-            test_end=args.test_end, cost_bps=args.cost_bps, trade_qty=args.trade_qty,
+            train_end=args.train_end,
+            validation_end=args.validation_end,
+            test_end=args.test_end,
+            cost_bps=args.cost_bps,
+            trade_qty=args.trade_qty,
             allowed_decision_sessions=allowed_sessions,
             regime_id=regime_plan.regime if regime_plan is not None else "chronological-v1",
             evidence_mode=args.evidence_mode,
@@ -302,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
         evidence_provider=evidence_provider,
     )
     prepared = archive_news_evidence(
-        prepared, (item for symbol in sorted(news_by_symbol) for item in news_by_symbol[symbol]),
+        prepared,
+        (item for symbol in sorted(news_by_symbol) for item in news_by_symbol[symbol]),
     )
     prepared.write(args.output)
     if regime_plan is not None:
@@ -310,30 +361,37 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(regime_plan.to_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    print(json.dumps({
-        "artifact_hash": prepared.artifact_hash,
-        "dataset_hash": prepared.dataset.manifest.dataset_hash,
-        "output": str(args.output), "symbols": len(symbols),
-        "training_examples": len(prepared.dataset.manifest.split_example_ids["train"]),
-        "evidence_mode": args.evidence_mode,
-        "news_provider": (
-            args.news_provider if args.evidence_mode in {"news", "news-sec"} else None
-        ),
-        "news_evidence_scope": (
-            "raw-headline-summary-and-aggregate"
-            if args.evidence_mode in {"news", "news-sec"} else None
-        ),
-        "max_news_articles_per_decision": args.max_news_articles,
-        "evidence_records": len(prepared.evidence_rows),
-        "sec_evidence_scope": (
-            "submissions-metadata-and-bounded-text"
-            if args.evidence_mode in {"sec", "news-sec"} else None
-        ),
-        "sec_missing_symbols": tuple(sorted(sec_missing_symbols)),
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "artifact_hash": prepared.artifact_hash,
+                "dataset_hash": prepared.dataset.manifest.dataset_hash,
+                "output": str(args.output),
+                "symbols": len(symbols),
+                "training_examples": len(prepared.dataset.manifest.split_example_ids["train"]),
+                "evidence_mode": args.evidence_mode,
+                "news_provider": (
+                    args.news_provider if args.evidence_mode in {"news", "news-sec"} else None
+                ),
+                "news_evidence_scope": (
+                    "raw-headline-summary-and-aggregate"
+                    if args.evidence_mode in {"news", "news-sec"}
+                    else None
+                ),
+                "max_news_articles_per_decision": args.max_news_articles,
+                "evidence_records": len(prepared.evidence_rows),
+                "sec_evidence_scope": (
+                    "submissions-metadata-and-bounded-text"
+                    if args.evidence_mode in {"sec", "news-sec"}
+                    else None
+                ),
+                "sec_missing_symbols": tuple(sorted(sec_missing_symbols)),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

@@ -4,6 +4,7 @@ The adapter deliberately delegates exchange-session bounds to a caller-supplied
 calendar resolver.  A date in a provider index is not enough information to
 truthfully infer an exchange close, particularly around holidays and DST.
 """
+
 from __future__ import annotations
 
 import math
@@ -13,7 +14,6 @@ from datetime import date, datetime
 from typing import Any
 
 from agent.contracts import Evidence, content_hash, normalize_timestamp, parse_timestamp
-
 
 SessionBoundsResolver = Callable[[str, date], tuple[datetime, datetime] | None]
 Downloader = Callable[..., Any]
@@ -62,8 +62,11 @@ class DailyPriceBar:
     open_at: str | datetime
     close_at: str | datetime
     retrieved_at: str | datetime
+    price_basis: str = "nominal"
 
     def __post_init__(self) -> None:
+        if self.price_basis not in {"nominal", "yahoo-split-adjusted"}:
+            raise ValueError("unknown daily price basis")
         symbol = self.symbol.strip().upper() if isinstance(self.symbol, str) else ""
         if not symbol:
             raise ValueError("symbol must be nonempty")
@@ -101,6 +104,8 @@ class DailyPriceBar:
         return self.close_at
 
     def to_evidence(self) -> Evidence:
+        if self.price_basis != "nominal":
+            raise ValueError("restore nominal share units before exposing Yahoo bars to a policy")
         values = {
             "session": self.session,
             "raw": {
@@ -114,7 +119,7 @@ class DailyPriceBar:
             "stock_splits": self.stock_splits,
             "adjustment_policy": {
                 "download_auto_adjust": False,
-                "execution_prices": "raw_unadjusted",
+                "execution_prices": "nominal_historical_share_units",
                 "feature_reference": "point_in_time_from_raw_close_and_actions",
                 "provider_adjusted_close": "excluded_from_historical_evidence",
                 "corporate_actions": "retained_separately",
@@ -201,10 +206,13 @@ class YFinancePriceAdapter:
                 adjusted_close=self._get(row, "Adj Close", "Adj_Close", "adjusted_close"),
                 volume=self._get(row, "Volume"),
                 dividends=self._get(row, "Dividends", required=False, default=0.0),
-                stock_splits=self._get(row, "Stock Splits", "Stock_Splits", required=False, default=0.0),
+                stock_splits=self._get(
+                    row, "Stock Splits", "Stock_Splits", required=False, default=0.0
+                ),
                 open_at=bounds[0],
                 close_at=bounds[1],
                 retrieved_at=retrieved,
+                price_basis="yahoo-split-adjusted",
             )
             previous = bars.get(session)
             if previous is not None and previous != bar:
@@ -228,7 +236,9 @@ class YFinancePriceAdapter:
 
     @classmethod
     def _iter_rows(
-        cls, result: Any, expected_symbol: str,
+        cls,
+        result: Any,
+        expected_symbol: str,
     ) -> Iterable[tuple[date, Mapping[Any, Any]]]:
         if result is None:
             return
@@ -258,9 +268,7 @@ class YFinancePriceAdapter:
                     raise ValueError(f"ambiguous provider column {normalized_key!r}")
                 row[normalized_key] = value
             if tuple_tickers and tuple_tickers != {expected_symbol}:
-                raise ValueError(
-                    f"provider tuple columns do not identify only {expected_symbol}"
-                )
+                raise ValueError(f"provider tuple columns do not identify only {expected_symbol}")
             session_value = cls._get(row, "Date", "date", "session", required=False)
             if session_value is None:
                 session_value = index

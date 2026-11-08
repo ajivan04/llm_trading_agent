@@ -193,6 +193,23 @@ class TrajectoryTests(unittest.TestCase):
         self.assertAlmostEqual(row["net_equity_change"], -0.05)
         self.assertAlmostEqual(row["fills"][0]["price"], 100.05)
 
+    def test_pooling_training_folds_preserves_independent_accounts_and_rejects_overlap(self):
+        from agent.trajectories import merge_train_collections
+
+        full = self.collect()
+        one = replace(full, records=full.records[:1], planned_sessions=full.planned_sessions[:1])
+        two = replace(full, records=full.records[1:], planned_sessions=full.planned_sessions[1:])
+        pooled = merge_train_collections((one, two))
+        self.assertEqual(pooled.planned_sessions, full.planned_sessions)
+        self.assertTrue(all(row["independent_fold"] for row in pooled.records))
+        self.assertEqual({row["source_fold"] for row in pooled.records}, {0, 1})
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            merge_train_collections((one, one))
+        with self.assertRaisesRegex(ValueError, "complete"):
+            merge_train_collections((replace(full, records=full.records[:1]),))
+        with self.assertRaises(ValueError):
+            merge_train_collections(())
+
     def test_validation_starts_separate_account_and_test_collection_is_blocked(self):
         train = self.collect()
         policy = Policy()
@@ -201,7 +218,7 @@ class TrajectoryTests(unittest.TestCase):
         self.assertEqual(validation.split, "validation")
         self.assertEqual(policy.inputs[0]["state"]["positions"], {})
         self.assertEqual(policy.inputs[0]["state"]["cash"], 100000)
-        with self.assertRaisesRegex(ValueError, "explicit validation"):
+        with self.assertRaisesRegex(ValueError, "verified frozen release"):
             self.collect(split="test")
 
     def test_good_export_preserves_tool_turns_raw_completion_and_verified_splits(self):
@@ -290,8 +307,10 @@ class TrajectoryTests(unittest.TestCase):
     def test_changed_evidence_archive_cannot_resume_same_bars_and_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "journal"
+
             def provider(*_):
                 return ()
+
             with self.assertRaisesRegex(ValueError, "evidence_source_hash"):
                 self.collect(evidence_provider=provider)
             self.collect(

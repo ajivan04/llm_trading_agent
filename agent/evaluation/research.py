@@ -44,8 +44,8 @@ def summarize_research_replay(
     benchmark_symbol: str | None = None,
 ) -> ResearchReplayResult:
     """Summarize every chronological decision, never GOOD-only filtered rows."""
-    if collection.split != "validation":
-        raise ValueError("research model comparison is validation-only")
+    if collection.split not in {"validation", "test"}:
+        raise ValueError("research model comparison requires validation or frozen test")
     records = collection.records
     if not records:
         raise ValueError("research evaluation needs at least one completed decision")
@@ -158,6 +158,9 @@ def summarize_research_replay(
         "execution_rejection_rate": rejections / proposed if proposed else 0.0,
         "hold_decisions": holds,
         "tool_calls": sum(row["tool_call_count"] for row in records),
+        "researched_decisions": sum(row["tool_call_count"] >= 1 for row in records),
+        "researched_decision_rate": sum(row["tool_call_count"] >= 1 for row in records)
+        / len(records),
         "failure_counts": dict(
             Counter(
                 str(row.get("policy_failure") or row.get("error_class") or "invalid_policy_output")
@@ -170,11 +173,15 @@ def summarize_research_replay(
         "decision_cycle_seconds_p95": _percentile(latencies, 0.95),
         "initial_input_tokens_max": max(input_tokens) if input_tokens else None,
         "benchmark_symbols": len(benchmark_symbols),
-        "test_policy_calls": 0,
+        "test_policy_calls": len(records) if collection.split == "test" else 0,
     }
     protocol = {
-        "version": "account-aware-validation-research-v1",
-        "split": "validation",
+        "version": (
+            "account-aware-frozen-test-v1"
+            if collection.split == "test"
+            else "account-aware-validation-research-v1"
+        ),
+        "split": collection.split,
         "policy_identity": collection.policy_identity,
         "source_hash": collection.source_hash,
         "settings": collection.settings,
@@ -200,6 +207,7 @@ def _implementation_hashes() -> dict[str, str]:
         "agent/config.py",
         "agent/contracts.py",
         "agent/data/prices.py",
+        "agent/price_basis.py",
         "agent/trajectories.py",
         "agent/evaluation/research.py",
         "agent/evaluation/metrics.py",

@@ -273,6 +273,8 @@ class ResearchEvaluationCLITests(unittest.TestCase):
                 "2",
             ]
             first, second = Policy(), Policy()
+            from agent.research import ResearchSettings
+            first.settings = second.settings = ResearchSettings()
             with (
                 patch("agent.trajectory_cli._calendar", return_value=Calendar()),
                 patch("agent.research_eval_cli.HuggingFaceQwenBackend"),

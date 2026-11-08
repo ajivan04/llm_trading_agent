@@ -19,6 +19,7 @@ from agent.trajectories import (
     collect_trajectories,
     export_good_dataset,
     load_collection,
+    merge_train_collections,
 )
 from agent.universe import BASELINE_UNIVERSE
 
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         command.add_argument("--start", help="inclusive decision date, no earlier than 2016-01-01")
         command.add_argument("--end", help="exclusive decision date")
+        command.add_argument("--cohort", choices=("recent", "midterm"), default="recent")
         command.add_argument(
             "--symbols", nargs="+", help="explicit research fixture universe override"
         )
@@ -65,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--train-journal", type=Path, required=True)
     export.add_argument("--validation-journal", type=Path, required=True)
     export.add_argument("--output", type=Path, required=True)
+    export.add_argument("--extra-train-journal", type=Path, action="append", default=[])
     return parser
 
 
@@ -125,6 +128,9 @@ def _policy(args):
 
 def _plan(args):
     source = args.prepared.resolve()
+    hydration = source / "hydration-manifest.json"
+    if hydration.is_file() and json.loads(hydration.read_text()).get("heldout_news_requested"):
+        raise ValueError("held-out source cannot be used for training or validation selection")
     required = (
         "dataset/manifest.json",
         "preparation-manifest.json",
@@ -134,6 +140,17 @@ def _plan(args):
     hashes = {name: _file_hash(source / name) for name in required}
     manifest = json.loads((source / "dataset/manifest.json").read_text())
     prepared_manifest = json.loads((source / "preparation-manifest.json").read_text())
+    if (
+        prepared_manifest.get("heldout_news_requested")
+        or prepared_manifest.get("archive_kind") == "frozen-heldout-source"
+    ):
+        raise ValueError("held-out source cannot be used for training or validation selection")
+    if hydration.is_file():
+        hashes["hydration-manifest.json"] = _file_hash(hydration)
+    if (source / "compaction-manifest.json").is_file():
+        hashes["compaction-manifest.json"] = _file_hash(source / "compaction-manifest.json")
+    if (source / "price-basis-manifest.json").is_file():
+        hashes["price-basis-manifest.json"] = _file_hash(source / "price-basis-manifest.json")
     universe = tuple(args.symbols or BASELINE_UNIVERSE)
     settings = TrajectorySettings(
         universe, manifest["train_end"], manifest["validation_end"], manifest["test_end"]
@@ -187,6 +204,8 @@ def _plan(args):
                 compaction.get("source_dataset_hash") != prepared_manifest.get("dataset_hash")
             ),
         }
+    if any(row.get("price_basis") != "nominal" for row in source_rows):
+        raise ValueError("source price basis requires normalization before training or evaluation")
     for row in source_rows:
         item = DailyPriceBar(**row)
         if item.symbol in settings.universe:
@@ -226,6 +245,26 @@ def _plan(args):
         raise ValueError(
             f"only {len(candidates)} complete eligible {args.split} sessions; requested {count}"
         )
+    cohort = getattr(args, "cohort", "recent")
+    if cohort == "midterm":
+        if args.split != "train":
+            raise ValueError("historical midterm folds are training-only")
+        year = parse_timestamp(settings.train_end).year
+        candidates = [
+            d
+            for d in candidates
+            if int(d[:4]) < year
+            and int(d[:4]) % 4 == 2
+            and d[5:7] == "10"
+            and calendar.next(d).session[:7] == d[:7]
+        ]
+        if candidates:
+            latest_year = max(d[:4] for d in candidates)
+            candidates = [d for d in candidates if d[:4] == latest_year]
+        if len(candidates) < count:
+            raise ValueError(
+                "insufficient complete historical midterm sessions; no symbol imputation"
+            )
     selected = tuple(candidates[-count:])
     evidence = tuple(Evidence(**row) for row in _rows(source / "evidence.jsonl"))
     if prepared_manifest.get("counts", {}).get("evidence") != len(evidence):
@@ -238,7 +277,12 @@ def _plan(args):
             for item in evidence
             if item.symbol in (*settings.universe, None)
             and item.eligible(cutoff)
-            and parse_timestamp(cutoff) - parse_timestamp(item.available_at)
+            and parse_timestamp(cutoff)
+            - parse_timestamp(
+                item.observed_at
+                if item.source in {"alpaca.news", "alpha_vantage.news"}
+                else item.available_at
+            )
             <= timedelta(
                 days=(
                     args.sec_lookback_days
@@ -267,6 +311,7 @@ def _plan(args):
         raise ValueError("prepared source changed during planning; finish the artifact transfer")
     summary = {
         "split": args.split,
+        "cohort": cohort,
         "sessions": selected,
         "source_file_hashes": hashes,
         "universe": settings.universe,
@@ -287,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "export":
         train = load_collection(args.train_journal)
         validation = load_collection(args.validation_journal)
+        if args.extra_train_journal:
+            train = merge_train_collections(
+                (train, *(load_collection(p) for p in args.extra_train_journal))
+            )
         artifact = export_good_dataset(train, validation, args.output)
         print(
             canonical_json(
@@ -332,9 +381,11 @@ def main(argv: list[str] | None = None) -> int:
                 if item.source.startswith("sec.")
                 else args.news_lookback_days
             )
-            if item.eligible(as_of) and cutoff - parse_timestamp(item.available_at) <= timedelta(
-                days=days
-            ):
+            if item.eligible(as_of) and cutoff - parse_timestamp(
+                item.observed_at
+                if item.source in {"alpaca.news", "alpha_vantage.news"}
+                else item.available_at
+            ) <= timedelta(days=days):
                 result.append(item)
         return tuple(result)
 

@@ -28,6 +28,7 @@ from agent.contracts import (
 )
 from agent.data.cache import CacheIdentity, SqliteResponseCache
 from agent.policy import ToolRegistry, ToolSpec
+from agent.price_basis import split_adjusted_closes
 
 _PERIODS = {"1d": 1, "5d": 5, "1mo": 23, "3mo": 66, "6mo": 132, "1y": 264}
 _NEWS = {"alpaca.news", "alpha_vantage.news"}
@@ -241,7 +242,7 @@ class AssignmentTools:
                 if self.mode == "historical"
                 else f"live:{parse_timestamp(self.as_of).date().isoformat()}"
             ),
-            transformation_version="assignment-tools-v2-live-actions",
+            transformation_version="assignment-tools-v3-nominal-live",
         )
         cached = self.cache.get(identity, now=self._now())
         if cached is not None:
@@ -355,7 +356,7 @@ class AssignmentTools:
                     if item.source in _NEWS
                     and item.symbol in normalized
                     and item.eligible(self.as_of)
-                    and start <= parse_timestamp(item.available_at) <= end
+                    and start <= parse_timestamp(item.observed_at) <= end
                 )
             return self._news_request(
                 normalized,
@@ -379,8 +380,11 @@ class AssignmentTools:
                 records[:limit],
                 cache_hit=hit,
                 sentiment="not supplied by Alpaca; infer only from article text",
-                coverage=("bounded latest provider page" if self.mode == "live"
-                          else "eligible archive records, output limited to requested count"),
+                coverage=(
+                    "bounded latest provider page"
+                    if self.mode == "live"
+                    else "eligible archive records, output limited to requested count"
+                ),
             )
         except Exception:
             return self._output("alpaca.news", status="provider_error", error="news_unavailable")
@@ -411,7 +415,7 @@ class AssignmentTools:
                 return self._output(
                     "derived.local_macd", status="missing", error="insufficient_history"
                 )
-            closes = [_number(item.values["raw"]["close"], positive=True) for item in bars]
+            closes = split_adjusted_closes(bars)
             fast, slow = _ema(closes, 12), _ema(closes, 26)
             macd = [a - b for a, b in zip(fast, slow, strict=True)]
             signal = _ema(macd, 9)[-1]
@@ -446,7 +450,7 @@ class AssignmentTools:
         bars = self._historical(symbol, "yfinance")
         if len(bars) <= time_period:
             return self._output("derived.local_rsi", error="insufficient_history")
-        closes = [_number(item.values["raw"]["close"], positive=True) for item in bars]
+        closes = split_adjusted_closes(bars)
         changes = [b - a for a, b in zip(closes, closes[1:], strict=False)]
         gain = sum(max(value, 0) for value in changes[:time_period]) / time_period
         loss = sum(max(-value, 0) for value in changes[:time_period]) / time_period
@@ -478,9 +482,7 @@ class AssignmentTools:
             return self._output("derived.historical_quote")
         latest = bars[-1]
         price = _number(latest.values["raw"]["close"], positive=True)
-        previous = (
-            _number(bars[-2].values["raw"]["close"], positive=True) if len(bars) > 1 else None
-        )
+        previous = split_adjusted_closes(bars)[-2] if len(bars) > 1 else None
         record = self._derived(
             symbol,
             "derived.historical_quote",
@@ -690,7 +692,8 @@ class AssignmentTools:
         from agent.data.news import AlpacaNewsAdapter
 
         return AlpacaNewsAdapter(self._alpaca_key, self._alpaca_secret).fetch(
-            symbols, latest_only=True, **kwargs)
+            symbols, latest_only=True, **kwargs
+        )
 
     def _default_price_request(self, symbol, period):
         import yfinance
@@ -698,15 +701,25 @@ class AssignmentTools:
         frame = yfinance.Ticker(symbol).history(period=period, auto_adjust=False, actions=True)
         received = self._now()
         records = []
-        for index, row in frame.iterrows():
+        rows = sorted(frame.iterrows(), key=lambda pair: pair[0])
+        factors, future_factor = {}, 1.0
+        for index, row in reversed(rows):
+            factors[index.date().isoformat()] = future_factor
+            action = _number(row.get("Stock Splits", 0))
+            if action < 0:
+                raise ValueError("invalid provider split action")
+            if action:
+                future_factor *= action
+        for index, row in rows:
             session = index.date().isoformat()
             close_at = self._close(session)
             if parse_timestamp(close_at) > received:
                 continue  # Today's incomplete daily candle is not a historical bar.
+            factor = factors[session]
             values = {
                 "session": session,
                 "raw": {
-                    name: _number(row[column], positive=True)
+                    name: _number(row[column], positive=True) * factor
                     for name, column in (
                         ("open", "Open"),
                         ("high", "High"),
@@ -714,12 +727,14 @@ class AssignmentTools:
                         ("close", "Close"),
                     )
                 },
-                "volume": _number(row["Volume"]),
-                "price_basis": "raw",
-                "dividends": _number(row.get("Dividends", 0)),
+                "volume": int(round(_number(row["Volume"]) / factor)),
+                "price_basis": "nominal",
+                "dividends": _number(row.get("Dividends", 0)) * factor,
                 "stock_splits": _number(row.get("Stock Splits", 0)),
-                "adjustment_policy": {"auto_adjust": False,
-                                      "basis": "raw prices with separately recorded actions"},
+                "adjustment_policy": {
+                    "auto_adjust": False,
+                    "basis": "nominal historical share units with separately recorded actions",
+                },
                 "historical_replay_safe": False,
             }
             records.append(
@@ -732,7 +747,7 @@ class AssignmentTools:
                     retrieved_at=received,
                     text=f"{symbol} completed daily OHLCV {session}; captured live",
                     values=values,
-                    transformation_version="assignment-live-bars-v1",
+                    transformation_version="assignment-live-nominal-v2",
                 )
             )
         return tuple(records)

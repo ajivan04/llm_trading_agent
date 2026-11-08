@@ -247,6 +247,7 @@ class QwenToolPolicy:
         max_context_tokens: int | None = None,
         evidence_projector: Callable[[Evidence], Mapping[str, Any]] | None = None,
         continue_tool_errors: bool = False,
+        min_tool_calls: int = 0,
     ) -> None:
         if max_turns <= 0 or max_new_tokens <= 0:
             raise ValueError("generation limits must be positive")
@@ -262,6 +263,9 @@ class QwenToolPolicy:
         self.token_counter, self.max_context_tokens = token_counter, max_context_tokens
         self.evidence_projector = evidence_projector
         self.continue_tool_errors = continue_tool_errors
+        if type(min_tool_calls) is not int or not 0 <= min_tool_calls < max_turns:
+            raise ValueError("minimum tool calls must leave a final generation turn")
+        self.min_tool_calls = min_tool_calls
 
     def run(
         self,
@@ -321,8 +325,12 @@ class QwenToolPolicy:
                     "missing",
                     "date",
                     "message",
-                    "text", "realtime", "historical_replay_safe", "cache_message",
-                    "candidate_symbols", "excluded_deep_research_symbols",
+                    "text",
+                    "realtime",
+                    "historical_replay_safe",
+                    "cache_message",
+                    "candidate_symbols",
+                    "excluded_deep_research_symbols",
                 }
                 result = {
                     key: value[:1200] if isinstance(value, str) else value
@@ -471,6 +479,13 @@ class QwenToolPolicy:
                 )
             except ValueError:
                 return finish("parse_failure", failure="invalid_decision_schema")
+            researched = sum(
+                call["tool"] in {s["name"] for s in self.registry.schemas}
+                and call["result"].get("status") in {"ok", "missing"}
+                for call in calls
+            )
+            if researched < self.min_tool_calls:
+                return finish("missing_tool_research", failure="missing_required_tool_research")
             return finish("success", decisions)
         return finish("max_turns", failure="tool_budget_exhausted")
 

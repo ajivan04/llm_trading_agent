@@ -21,7 +21,7 @@ cd "$PROJECT_ROOT"
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
 [[ -x "$PYTHON" ]] || { echo "Missing project .venv/bin/python" >&2; exit 1; }
 case "$RUN_MODE" in
-  smoke) TRAIN_SESSIONS=2; VALIDATION_SESSIONS=2 ;;
+  smoke) TRAIN_SESSIONS=60; VALIDATION_SESSIONS=20 ;;
   full)
     [[ "${REVIEWED_SMOKE:-0}" == 1 ]] || {
       echo "Review smoke source coverage, decisions and labels; set REVIEWED_SMOKE=1 afterward." >&2
@@ -31,31 +31,50 @@ case "$RUN_MODE" in
   *) echo "RUN_MODE must be smoke or full" >&2; exit 2 ;;
 esac
 case "$ACTION" in collect|export|both) ;; *) echo "ACTION must be collect, export, or both" >&2; exit 2 ;; esac
-COLLECTION_ROOT="${COLLECTION_ROOT:-$PREPARED_ROOT/assignment-$RUN_MODE}"
+COLLECTION_ROOT="${COLLECTION_ROOT:-$PREPARED_ROOT/assignment-final}"
 TRAJECTORY_ROOT="${TRAJECTORY_ROOT:-$COLLECTION_ROOT/export}"
 export PYTHONUNBUFFERED=1
 export HF_HUB_DISABLE_PROGRESS_BARS=1
 export TQDM_DISABLE=1
 if [[ "$ACTION" != export ]]; then
-  for split in train validation; do
+  for cohort in recent midterm validation; do
+    split=train
+    cohort_args=()
+    journal_name=train
+    sessions="$TRAIN_SESSIONS"
+    if [[ "$cohort" == midterm ]]; then
+      sessions="${HISTORICAL_SESSIONS:-20}"
+      [[ "$sessions" != 0 ]] || continue
+      cohort_args=(--cohort midterm)
+      journal_name=train-midterm
+    elif [[ "$cohort" == validation ]]; then
+      split=validation; journal_name=validation; sessions="$VALIDATION_SESSIONS"
+    fi
     resume_args=()
-    if [[ "${RESUME_COLLECTION:-0}" == 1 && -f "$COLLECTION_ROOT/$split/collection-manifest.json" ]]; then
+    if [[ "${RESUME_COLLECTION:-0}" == 1 && -f "$COLLECTION_ROOT/$journal_name/collection-manifest.json" ]]; then
       resume_args=(--resume)
     fi
-    sessions="$TRAIN_SESSIONS"
-    [[ "$split" != validation ]] || sessions="$VALIDATION_SESSIONS"
+    if [[ "$RUN_MODE" == smoke ]]; then
+      resume_args+=(--max-sessions "${COLLECTION_SMOKE_SESSIONS:-2}")
+    fi
     echo "Collecting split=$split planned_sessions=$sessions mode=$RUN_MODE"
     "$PYTHON" -m agent.trajectory_cli collect \
-      --prepared "$PREPARED_ROOT" --journal "$COLLECTION_ROOT/$split" \
+      --prepared "$PREPARED_ROOT" --journal "$COLLECTION_ROOT/$journal_name" \
       --split "$split" --sessions "$sessions" --require-cuda \
+      ${cohort_args[@]+"${cohort_args[@]}"} \
       --max-context-tokens "${MAX_LENGTH:-4096}" \
       --max-new-tokens "${MAX_NEW_TOKENS:-512}" --max-turns "${MAX_TURNS:-6}" \
       ${resume_args[@]+"${resume_args[@]}"}
   done
 fi
 if [[ "$ACTION" != collect ]]; then
+  extra_args=()
+  if [[ "${HISTORICAL_SESSIONS:-20}" != 0 ]]; then
+    extra_args=(--extra-train-journal "$COLLECTION_ROOT/train-midterm")
+  fi
   "$PYTHON" -m agent.trajectory_cli export \
     --train-journal "$COLLECTION_ROOT/train" \
-    --validation-journal "$COLLECTION_ROOT/validation" --output "$TRAJECTORY_ROOT"
+    --validation-journal "$COLLECTION_ROOT/validation" --output "$TRAJECTORY_ROOT" \
+    ${extra_args[@]+"${extra_args[@]}"}
 fi
 echo "Collection artifacts: $COLLECTION_ROOT"
