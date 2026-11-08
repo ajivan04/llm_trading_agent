@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent.context import ContextConfig, build_context, project_evidence_record
+from agent.context import ContextBudgetError, ContextConfig, build_context, project_evidence_record
 from agent.contracts import Evidence, content_hash, normalize_timestamp
 from agent.features import PriceFeatureBuilder
 from agent.policy import QwenToolPolicy, ToolRegistry
@@ -177,27 +177,47 @@ class ResearchPolicy:
             "as_of": cutoff,
             "universe": universe,
             "research_candidates": candidates,
-            "price_marks": marks,
+            # Other allowed symbols remain researchable through the tools. Their
+            # precise float marks need not occupy the initial mandatory envelope.
+            "price_marks": {
+                symbol: marks[symbol]
+                for symbol in marks
+                if symbol in candidates or state.get("positions", {}).get(symbol, 0) > 0
+            },
+            "price_mark_scope": "research_candidates_and_holdings",
         }
         factory = AssignmentTools if self.mode == "historical" else AssignmentTools.from_environment
         with factory(cutoff, universe, cache_path=self.cache_path, evidence=evidence) as tools:
             registry = ToolRegistry(cutoff)
             tools.register_tools(registry)
-            context = build_context(
-                state=account,
-                evidence=initial,
-                memories=memories,
-                tools=registry.schemas,
-                token_counter=self.backend.token_count,
-                max_context_tokens=(
-                    self.settings.max_context_tokens
-                    - self.settings.tool_context_reserve
-                    - self.settings.training_template_reserve
-                ),
-                reserved_final_tokens=self.settings.max_new_tokens,
-                config=self.settings.context,
-                required_evidence_ids=required,
-            )
+            try:
+                context = build_context(
+                    state=account,
+                    evidence=initial,
+                    memories=memories,
+                    tools=registry.schemas,
+                    token_counter=self.backend.token_count,
+                    max_context_tokens=(
+                        self.settings.max_context_tokens
+                        - self.settings.tool_context_reserve
+                        - self.settings.training_template_reserve
+                    ),
+                    reserved_final_tokens=self.settings.max_new_tokens,
+                    config=self.settings.context,
+                    required_evidence_ids=required,
+                )
+            except ContextBudgetError as exc:
+                return {
+                    "status": "context_failure",
+                    "failure": "required_context_exceeds_budget",
+                    "messages": [],
+                    "completion": "",
+                    "tool_calls": [],
+                    "context_diagnostics": {
+                        "minimum_input_tokens": exc.minimum_input_tokens,
+                        "input_token_budget": exc.input_token_budget,
+                    },
+                }
             policy = QwenToolPolicy(
                 self.backend,
                 registry,

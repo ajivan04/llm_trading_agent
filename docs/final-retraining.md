@@ -40,7 +40,7 @@ export HYDRATED_ROOT="$PWD/artifacts/final-nlp-source"
 export ENV_FILE="$PWD/.env"
 export HISTORICAL_SESSIONS=20
 export PREPARED_ROOT="$HYDRATED_ROOT"
-export COLLECTION_ROOT="$PWD/artifacts/final-collections"
+export COLLECTION_ROOT="$PWD/artifacts/final-collections-v2"
 export TRAJECTORY_ROOT="$COLLECTION_ROOT/export"
 export OUTPUT_ROOT="$TRAJECTORY_ROOT/sft-assignment"
 export PPO_PREPARED_ROOT="$PWD/artifacts/final-ppo-source"
@@ -114,6 +114,13 @@ then check each plan without loading weights:
 ```bash
 sbatch --export=ALL,RUN_MODE=smoke scripts/collect_turing.slurm
 ```
+
+After pulling the context-budget fix, use the new `final-collections-v2` root.
+Preserve earlier failed journals; changed prompt/code identities cannot resume
+those records. No normalization or news hydration rerun is necessary.
+The smoke job now stops if a cohort has no researched, executable simulated
+trade; a valid HOLD alone does not pass this trading-readiness smoke gate.
+Explicit context token counts and code locations appear in failure records.
 
 Review the two-session prefix in each journal (`train`, `train-midterm`,
 `validation`). Inspect `episode-*.json`, schema errors, actual tool calls,

@@ -585,6 +585,7 @@ def collect_trajectories(
             # The callback receives only decision-time inputs. Following-session
             # bars are accessed below only after its response has been captured.
             failure, recorded, captured = None, None, None
+            error_location = None
             response = {}
             started = time.monotonic()
             print(
@@ -612,6 +613,16 @@ def collect_trajectories(
                 recorded = _result(response, as_of=at, universe=settings.universe, state=state)
             except Exception as exc:
                 failure = type(exc).__name__
+                # Record code location, never exception values or frame locals:
+                # provider errors may contain credentials or source payloads.
+                frame = exc.__traceback__
+                while frame.tb_next is not None:
+                    frame = frame.tb_next
+                error_location = {
+                    "module": frame.tb_frame.f_globals.get("__name__"),
+                    "function": frame.tb_frame.f_code.co_name,
+                    "line": frame.tb_lineno,
+                }
             initial_rejections = {}
             if recorded is not None:
                 initial_rejections = {
@@ -689,7 +700,19 @@ def collect_trajectories(
                 "evidence_aliases": recorded["evidence_aliases"] if recorded else {},
                 "original_messages": recorded["original_messages"] if recorded else [],
                 "error_class": failure,
-                "policy_status": safe_response.get("status", "generation_failure"),
+                "error_location": error_location,
+                "context_diagnostics": {
+                    key: value
+                    for key, value in (
+                        safe_response.get("context_diagnostics", {})
+                        if isinstance(safe_response.get("context_diagnostics"), Mapping)
+                        else {}
+                    ).items()
+                    if key in {"minimum_input_tokens", "input_token_budget"}
+                    and type(value) is int
+                    and value >= 0
+                },
+                "policy_status": safe_response.get("status", "policy_setup_failure"),
                 "policy_failure": safe_response.get("failure"),
                 "inference_seconds": time.monotonic() - started,
                 "initial_input_tokens": safe_response.get("initial_input_tokens"),
@@ -738,6 +761,11 @@ def collect_trajectories(
                         "session": current,
                         "label": label,
                         "tool_calls": row["tool_call_count"],
+                        "policy_status": row["policy_status"],
+                        "policy_failure": row["policy_failure"],
+                        "error_class": row["error_class"],
+                        "error_location": row["error_location"],
+                        "context_diagnostics": row["context_diagnostics"],
                     }
                 ),
                 flush=True,

@@ -65,6 +65,9 @@ if [[ "$ACTION" != export ]]; then
       --max-context-tokens "${MAX_LENGTH:-4096}" \
       --max-new-tokens "${MAX_NEW_TOKENS:-512}" --max-turns "${MAX_TURNS:-6}" \
       ${resume_args[@]+"${resume_args[@]}"}
+    if [[ "$RUN_MODE" == smoke ]]; then
+      "$PYTHON" -m agent.trajectory_cli review-smoke --journal "$COLLECTION_ROOT/$journal_name"
+    fi
   done
 fi
 if [[ "$ACTION" != collect ]]; then

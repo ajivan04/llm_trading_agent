@@ -160,6 +160,27 @@ class TrajectoryTests(unittest.TestCase):
                 **kwargs,
             )
 
+    def test_smoke_gate_requires_a_researched_trade_and_keeps_invalid_prefix(self):
+        from agent.trajectory_cli import review_smoke
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertGreater(review_smoke(self.collect())["executable_researched_sessions"], 0)
+            for policy in (Policy("hold"), Policy(bad_citation=True), Policy(tools=False)):
+                collection = self.collect(policy)
+                with self.assertRaisesRegex(ValueError, "no researched executable"):
+                    review_smoke(collection)
+                self.assertGreater(len(collection.records), 0)
+
+    def test_callback_failure_keeps_code_location_without_exception_values(self):
+        def broken(**_kwargs):
+            raise ValueError("SECRET-PROVIDER-ECHO")
+
+        result = self.collect(broken, max_sessions=1, policy_identity=IDENTITY)
+        row = result.records[0]
+        self.assertEqual(row["policy_status"], "policy_setup_failure")
+        self.assertEqual(row["error_location"]["function"], "broken")
+        self.assertNotIn("SECRET-PROVIDER-ECHO", canonical_json(row))
+
     def test_actual_base_decisions_are_labeled_without_future_policy_inputs(self):
         policy = Policy()
         result = self.collect(policy)

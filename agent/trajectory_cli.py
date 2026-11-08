@@ -61,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
             )
             command.add_argument("--resume", action="store_true")
             command.add_argument("--require-cuda", action="store_true")
+    review = commands.add_parser(
+        "review-smoke", help="require researched, executable smoke decisions"
+    )
+    review.add_argument("--journal", type=Path, required=True)
     export = commands.add_parser(
         "export", help="export verified completed journals without loading Qwen"
     )
@@ -327,8 +331,34 @@ def _plan(args):
     return bars, evidence, settings, selected, calendar, summary
 
 
+def review_smoke(collection):
+    executable = [
+        row
+        for row in collection.records
+        if row["status"] == "success"
+        and row["tool_call_count"] >= collection.settings.min_tool_calls
+        and row["fills"]
+        and not row["execution_rejections"]
+    ]
+    summary = {
+        "event": "trajectory_smoke_review",
+        "counts": collection.counts,
+        "executable_researched_sessions": len(executable),
+    }
+    print(canonical_json(summary), flush=True)
+    if not executable:
+        raise ValueError(
+            "smoke has no researched executable trades; "
+            "inspect episode diagnostics before continuing"
+        )
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "review-smoke":
+        review_smoke(load_collection(args.journal))
+        return 0
     if args.command == "export":
         train = load_collection(args.train_journal)
         validation = load_collection(args.validation_journal)
