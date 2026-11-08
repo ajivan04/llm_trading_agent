@@ -1,4 +1,4 @@
-# Breakpoint 4: paper execution, reflections and dynamic validation
+# Paper execution and recovery reference
 
 The policy now has a paper execution boundary with durable intent and research
 journals, broker reconciliation, pending-order reservations, and independent
@@ -121,20 +121,9 @@ It cannot discard unknown/submitting orders. Create a fresh cycle after that
 repair; expired proposals are not silently resubmitted. Configuration, source,
 adapter or code changes require a separate declared run, not bypassing a pause.
 
-See [research-evaluation.md](research-evaluation.md) for CPU planning and the
-resumable two-session → complete validation job. That CLI intentionally disables
-memory for an identical empty-seed base/SFT/PPO comparison and reports the
-choice. It does not yet establish the performance of the memory-enabled paper
-loop. The current v5 archive still needs raw news for NLP trajectory training and
-historical validation; aggregated news cannot reconstruct missing article text.
-
-## Remaining release gates
-
-This breakpoint implements the broker/memory/dynamic-validation foundation.
-Production paper dry-run and fault observations, GPU candidate comparisons,
-final notebook-facing submission entrypoints, immutable release packaging, and
-the held-out execution schedule remain explicit release work. Nothing here
-claims a trained candidate is valid or profitable.
+Use [the current workflow](final-retraining.md) for stateful validation, notebook
+entrypoints and model selection. Those implementations exist; actual model and
+broker rehearsals remain empirical checks, not claims made by this reference.
 
 The October week must end at **October 30, 2026 close**. Close-to-next-open
 execution from October 26–30 decisions would reach November 2. A full five-session
